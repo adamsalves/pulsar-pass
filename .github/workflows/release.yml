@@ -87,7 +87,7 @@ jobs:
           file: deployments/docker/Dockerfile
           build-args: |
             SVC=${{ matrix.service }}
-            GO_VERSION=1.25
+            VERSION=${{ steps.meta.outputs.version }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
