@@ -3,6 +3,7 @@ package eventbus_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,10 +126,13 @@ func TestJetStreamRedeliveryOnHandlerFailure(t *testing.T) {
 	})
 
 	deliveries := make(chan eventbus.Message, 8)
-	fail := true
+	// atomic because the handler runs on the consumer goroutine while
+	// the test goroutine flips it after the first delivery.
+	var fail atomic.Bool
+	fail.Store(true)
 	if err := bus.Subscribe("test.retry", "test-retry", func(_ context.Context, msg eventbus.Message) error {
 		deliveries <- msg
-		if fail {
+		if fail.Load() {
 			return errors.New("boom")
 		}
 		return nil
@@ -149,7 +153,7 @@ func TestJetStreamRedeliveryOnHandlerFailure(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for first delivery")
 	}
-	fail = false
+	fail.Store(false)
 	select {
 	case <-deliveries:
 	case <-time.After(5 * time.Second):
