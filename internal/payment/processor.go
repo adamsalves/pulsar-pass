@@ -20,12 +20,12 @@ var ErrNotWired = errors.New("payment processor is not wired")
 // until the projection lands.
 var ErrContextNotFound = errors.New("reservation context not found")
 
-// PaymentRequested is the command consumed from the broker.
+// PaymentRequested is the command consumed from the broker. It carries
+// no monetary fields: amount and currency come exclusively from the
+// reservation context projection, keeping pricing server-authoritative.
 type PaymentRequested struct {
 	ReservationID string `json:"reservation_id"`
 	UserID        string `json:"user_id"`
-	AmountCents   int64  `json:"amount_cents"`
-	Currency      string `json:"currency"`
 	Token         string `json:"payment_method_token"`
 }
 
@@ -88,14 +88,8 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 	if userID == "" {
 		userID = ctxData.UserID
 	}
-	amount := req.AmountCents
-	if amount == 0 {
-		amount = ctxData.AmountCents
-	}
-	currency := req.Currency
-	if currency == "" {
-		currency = ctxData.Currency
-	}
+	amount := ctxData.AmountCents
+	currency := ctxData.Currency
 	if currency == "" {
 		currency = "BRL"
 	}
