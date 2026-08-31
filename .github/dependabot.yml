@@ -12,6 +12,12 @@ updates:
           - patch
     labels:
       - dependencies
+    ignore:
+      # Deliberately pinned: nats-server >= 2.13 requires Go 1.26 while
+      # the project targets Go 1.25. Upgrade together with the toolchain
+      # in a dedicated change.
+      - dependency-name: "github.com/nats-io/nats-server/v2"
+        versions: [">=2.13.0"]
 
   - package-ecosystem: github-actions
     directory: /
