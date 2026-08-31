@@ -13,6 +13,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
 
 func main() {
@@ -36,6 +37,7 @@ func run() error {
 	handler := gateway.NewReservationHandler(bus, log, cfg.MaxQuantity)
 	apiServer := gateway.NewServer(cfg.HTTPAddr, gateway.Routes(handler, log))
 	healthServer := health.NewServer(cfg.HealthAddr, log)
+	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
 
 	errCh := make(chan error, 2)
@@ -47,6 +49,7 @@ func run() error {
 	}()
 
 	log.Info("pulsar-gateway started",
+		"version", version.Version,
 		"env", cfg.Env,
 		"http_addr", cfg.HTTPAddr,
 		"health_addr", cfg.HealthAddr,

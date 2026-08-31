@@ -11,6 +11,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/internal/payment"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
 
 func main() {
@@ -28,6 +29,7 @@ func run() error {
 	log := logger.New(cfg.Env)
 
 	healthServer := health.NewServer(cfg.HealthAddr, log)
+	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
 
 	errCh := make(chan error, 1)
@@ -36,6 +38,7 @@ func run() error {
 	}()
 
 	log.Info("pulsar-payment started",
+		"version", version.Version,
 		"env", cfg.Env,
 		"health_addr", cfg.HealthAddr,
 		"simulated_charge_delay", cfg.ChargeDelay.String(),
