@@ -1,0 +1,63 @@
+GO ?= go
+SERVICES := pulsar-gateway pulsar-core pulsar-chrono pulsar-payment pulsar-horizon
+
+CORE_DB      ?= postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable
+PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=disable
+
+.PHONY: all build run-gateway run-core vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build clean
+
+all: lint build test
+
+build:
+	@mkdir -p bin
+	@for svc in $(SERVICES); do \
+		$(GO) build -o bin/$$svc ./cmd/$$svc || exit 1; \
+	done
+	@echo "binaries: $(SERVICES) -> bin/"
+
+run-gateway:
+	$(GO) run ./cmd/pulsar-gateway
+
+run-core:
+	$(GO) run ./cmd/pulsar-core
+
+vet:
+	$(GO) vet ./...
+
+fmt:
+	$(GO) fmt ./...
+
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint is not installed"; exit 1; }
+	golangci-lint run
+
+test:
+	$(GO) test ./...
+
+tidy:
+	$(GO) mod tidy
+
+migrate-core-up:
+	migrate -path migrations/core -database "$(CORE_DB)" up
+
+migrate-core-down:
+	migrate -path migrations/core -database "$(CORE_DB)" down 1
+
+migrate-payment-up:
+	migrate -path migrations/payment -database "$(PAYMENT_DB)" up
+
+migrate-payment-down:
+	migrate -path migrations/payment -database "$(PAYMENT_DB)" down 1
+
+compose-up:
+	docker compose -f deployments/docker-compose.yml up -d
+
+compose-down:
+	docker compose -f deployments/docker-compose.yml down
+
+docker-build:
+	docker build -f deployments/docker/Dockerfile --build-arg SVC=pulsar-gateway -t pulsarpass/pulsar-gateway:dev .
+	docker build -f deployments/docker/Dockerfile --build-arg SVC=pulsar-core -t pulsarpass/pulsar-core:dev .
+
+clean:
+	rm -rf bin

@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - sloglint
+    - copyloopvar
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
