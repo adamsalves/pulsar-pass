@@ -5,11 +5,13 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/adamsalves/pulsar-pass/internal/core/domain"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 )
 
@@ -91,4 +93,15 @@ func seedEvent(t *testing.T, capacity int) string {
 		t.Fatalf("seed event: %v", err)
 	}
 	return id
+}
+
+func newTestReservation(t *testing.T, eventID string) *domain.Reservation {
+	t.Helper()
+	return domain.NewReservation(domain.NewReservationInput{
+		EventID:  eventID,
+		UserID:   "user-outbox",
+		Quantity: 1,
+		TTL:      10 * time.Minute,
+		Now:      time.Now().UTC(),
+	})
 }
