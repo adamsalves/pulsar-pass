@@ -11,8 +11,8 @@ import (
 
 	"github.com/adamsalves/pulsar-pass/internal/broker"
 	"github.com/adamsalves/pulsar-pass/internal/core"
-	"github.com/adamsalves/pulsar-pass/internal/core/application"
 	pgadapter "github.com/adamsalves/pulsar-pass/internal/core/adapter/postgres"
+	"github.com/adamsalves/pulsar-pass/internal/core/application"
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
