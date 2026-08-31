@@ -67,6 +67,29 @@ make compose-down        # infra
 - Atomic commits: one logical change per commit, tests included with the code they cover.
 - Pull request descriptions are written in Portuguese and kept detailed (context, per-service changes, tests, trade-offs).
 
+## CI & Releases
+
+| Workflow | Gatilho | O que faz |
+|---|---|---|
+| `CI` | push em `main` e PRs | lint (golangci-lint), testes com race detector + coverage, build dos 5 binários, smoke de imagem Docker (matrix por serviço) e checagem do título do PR (Conventional Commits) |
+| `Release` | tag `v*.*.*` | quality gate → GitHub Release com binários multi-arch + checksums (GoReleaser) → imagens Docker `linux/amd64` + `linux/arm64` publicadas no GHCR |
+
+Cortar uma release:
+
+```bash
+git tag -a v0.1.0 -m "release v0.1.0"
+git push origin v0.1.0        # dispara o workflow de Release
+```
+
+Imagens publicadas: `ghcr.io/adamsalves/pulsar-pass/<serviço>:{version,sha,latest}`. Metadados de build ficam embutidos nos binários (`pkg/version`) e expostos via header `X-Version` em `/healthz` e `/readyz`.
+
+Validação local do release (sem publicar):
+
+```bash
+make release-check     # valida .goreleaser.yaml
+make release-snapshot  # compila tudo em dist/ (snapshot 0.0.1-next)
+```
+
 ## Layout
 
 ```
@@ -80,4 +103,4 @@ docs/                 # blueprint de arquitetura e diagramas
 
 ## Roadmap
 
-Ciclo 0 (esta base) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI/CD. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos).
+Ciclo 0 (fundação) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI + releases ✅ → deploy/hardening. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos).

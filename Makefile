@@ -4,7 +4,7 @@ SERVICES := pulsar-gateway pulsar-core pulsar-chrono pulsar-payment pulsar-horiz
 CORE_DB      ?= postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable
 PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=disable
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -69,5 +69,17 @@ docker-build:
 		docker build -f deployments/docker/Dockerfile --build-arg SVC=$$svc -t pulsarpass/$$svc:dev . || exit 1; \
 	done
 
+release-check:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
+	goreleaser check
+
+release-build:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
+	goreleaser build --snapshot --clean
+
+release-snapshot:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
+	goreleaser release --snapshot --clean
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

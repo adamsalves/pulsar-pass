@@ -14,6 +14,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
+	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
 
 func main() {
@@ -46,6 +47,7 @@ func run() error {
 	go sweeper.Run(ctx)
 
 	healthServer := health.NewServer(cfg.HealthAddr, log)
+	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
 
 	errCh := make(chan error, 1)
@@ -54,6 +56,7 @@ func run() error {
 	}()
 
 	log.Info("pulsar-chrono started",
+		"version", version.Version,
 		"env", cfg.Env,
 		"health_addr", cfg.HealthAddr,
 		"sweep_interval", cfg.SweepInterval.String(),

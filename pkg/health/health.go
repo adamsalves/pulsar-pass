@@ -13,17 +13,21 @@ import (
 
 // Server exposes /healthz (liveness) and /readyz (readiness) endpoints.
 type Server struct {
-	log   *slog.Logger
-	http  *http.Server
-	ready atomic.Bool
+	log     *slog.Logger
+	http    *http.Server
+	ready   atomic.Bool
+	version atomic.Pointer[string]
 }
 
 // NewServer creates a health server bound to addr.
 func NewServer(addr string, log *slog.Logger) *Server {
 	s := &Server{log: log}
+	dev := "dev"
+	s.version.Store(&dev)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Version", *s.version.Load())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -36,6 +40,11 @@ func NewServer(addr string, log *slog.Logger) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s
+}
+
+// SetVersion records the build version reported by the X-Version header.
+func (s *Server) SetVersion(v string) {
+	s.version.Store(&v)
 }
 
 // SetReady toggles the readiness state reported by /readyz.
@@ -59,6 +68,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("X-Version", *s.version.Load())
 	if !s.ready.Load() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)

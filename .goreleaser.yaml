@@ -1,0 +1,64 @@
+version: 2
+
+project_name: pulsar-pass
+
+# One build spec per service; YAML anchors keep the common settings
+# (cross-compile, stripped binaries, embedded version metadata) in a
+# single place.
+builds:
+  - &build
+    id: pulsar-gateway
+    main: ./cmd/pulsar-gateway
+    binary: pulsar-gateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/adamsalves/pulsar-pass/pkg/version.Version={{.Version}}
+      - -X github.com/adamsalves/pulsar-pass/pkg/version.Commit={{.FullCommit}}
+      - -X github.com/adamsalves/pulsar-pass/pkg/version.Date={{.Date}}
+  - <<: *build
+    id: pulsar-core
+    main: ./cmd/pulsar-core
+    binary: pulsar-core
+  - <<: *build
+    id: pulsar-chrono
+    main: ./cmd/pulsar-chrono
+    binary: pulsar-chrono
+  - <<: *build
+    id: pulsar-payment
+    main: ./cmd/pulsar-payment
+    binary: pulsar-payment
+  - <<: *build
+    id: pulsar-horizon
+    main: ./cmd/pulsar-horizon
+    binary: pulsar-horizon
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^style:"
+      - "^test:"
+      - "^chore(deps):"
+      - Merge pull request
+      - Merge branch
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+release:
+  header: |
+    ## PulsarPass {{ .Version }}
+
+    Imagens Docker: `ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/pulsar-pass/<serviço>:{{ .Version }}`
+    Serviços: pulsar-gateway, pulsar-core, pulsar-chrono, pulsar-payment, pulsar-horizon
