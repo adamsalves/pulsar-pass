@@ -8,9 +8,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adamsalves/pulsar-pass/internal/broker"
 	"github.com/adamsalves/pulsar-pass/internal/horizon"
+	horizonadapter "github.com/adamsalves/pulsar-pass/internal/horizon/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 )
 
 func main() {
@@ -27,11 +30,31 @@ func run() error {
 	cfg := horizon.LoadConfig()
 	log := logger.New(cfg.Env)
 
+	corePool, err := pgpool.New(ctx, cfg.CoreDBURL, pgpool.Options{MaxConns: 5})
+	if err != nil {
+		return fmt.Errorf("connect core database: %w", err)
+	}
+	defer corePool.Close()
+
+	paymentPool, err := pgpool.New(ctx, cfg.PaymentDBURL, pgpool.Options{MaxConns: 5})
+	if err != nil {
+		return fmt.Errorf("connect payment database: %w", err)
+	}
+	defer paymentPool.Close()
+
+	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	if err != nil {
+		return err
+	}
+
+	coreRelay := horizon.NewRelay(horizonadapter.NewStore(corePool), bus, log, cfg.PollInterval, cfg.RelayBatch)
+	go coreRelay.Run(ctx)
+
+	paymentRelay := horizon.NewRelay(horizonadapter.NewStore(paymentPool), bus, log, cfg.PollInterval, cfg.RelayBatch)
+	go paymentRelay.Run(ctx)
+
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetReady(true)
-
-	relay := horizon.NewRelay(nil, nil, log, cfg.PollInterval, cfg.RelayBatch)
-	go relay.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -44,7 +67,6 @@ func run() error {
 		"poll_interval", cfg.PollInterval.String(),
 		"relay_batch", cfg.RelayBatch,
 	)
-	log.Info("outbox stores and broker adapters are wired in the next cycle; relay is idle")
 
 	select {
 	case err := <-errCh:
@@ -55,5 +77,6 @@ func run() error {
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	_ = bus.Close(shutdownCtx)
 	return healthServer.Shutdown(shutdownCtx)
 }

@@ -16,10 +16,10 @@ type OutboxRecord struct {
 	Headers map[string]string
 }
 
-// OutboxStore reads and acknowledges outbox rows. The PostgreSQL
-// implementation must claim rows with FOR UPDATE SKIP LOCKED and only
-// mark them processed after the broker publish succeeds, in a single
-// transaction per batch.
+// OutboxStore reads and acknowledges outbox rows. FetchBatch is a plain
+// read; crash-safety comes from publishing with the outbox event id as
+// the broker deduplication key, so a crash between publish and mark
+// simply re-publishes later without duplicating deliveries.
 type OutboxStore interface {
 	FetchBatch(ctx context.Context, limit int) ([]OutboxRecord, error)
 	MarkProcessed(ctx context.Context, ids ...string) error
