@@ -30,25 +30,32 @@ make compose-up
 make migrate-core-up
 make migrate-payment-up
 
-# 3. Buildar tudo
-make build
+# 3. Workers e API (cada um em um terminal, ou com & )
+make run-horizon    # relay do outbox → JetStream
+make run-core       # estoque + máquina de estados
+make run-payment    # acquirer simulado
+make run-chrono     # sweeper de TTL
+make run-gateway    # API :8080
 
-# 4. Subir o gateway (loopback, in-memory bus no ciclo 0)
-make run-gateway
-
-# 5. Smoke test
-curl -i -X POST localhost:8080/v1/reservations \
+# 4. Fluxo completo: reservar → pagar
+RES=$(curl -s -X POST localhost:8080/v1/reservations \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: demo-001" \
-  -d '{"event_id":"11111111-1111-1111-1111-111111111111","quantity":2}'
+  -H "X-User-Id: user-1" \
+  -d '{"event_id":"11111111-1111-1111-1111-111111111111","quantity":2}')
+echo "$RES"
+curl -s -X POST localhost:8080/v1/reservations/<id>/payment \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: pay-001" \
+  -d '{"payment_method_token":"tok-1"}'
 ```
 
-Health/readiness por serviço: `GET :9091..9095/healthz` e `/readyz`.
+Health/readiness por serviço: `GET :9091..9095/healthz` e `/readyz`. Sem NATS no ar em modo desenvolvimento, o gateway cai para bus in-memory (`BUS_MODE=memory` força isso).
 
 ## Desenvolvimento
 
 ```bash
-make fmt vet lint test   # qualidade
+make fmt vet lint test   # qualidade (testes de integração usam Docker via testcontainers)
 make docker-build        # imagens dos 5 serviços
 make compose-down        # infra
 ```

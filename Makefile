@@ -4,7 +4,7 @@ SERVICES := pulsar-gateway pulsar-core pulsar-chrono pulsar-payment pulsar-horiz
 CORE_DB      ?= postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable
 PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=disable
 
-.PHONY: all build run-gateway run-core vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build clean
 
 all: lint build test
 
@@ -20,6 +20,15 @@ run-gateway:
 
 run-core:
 	$(GO) run ./cmd/pulsar-core
+
+run-chrono:
+	$(GO) run ./cmd/pulsar-chrono
+
+run-payment:
+	$(GO) run ./cmd/pulsar-payment
+
+run-horizon:
+	$(GO) run ./cmd/pulsar-horizon
 
 vet:
 	$(GO) vet ./...
