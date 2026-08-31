@@ -12,6 +12,7 @@ type Config struct {
 	Env         string
 	HTTPAddr    string
 	HealthAddr  string
+	BusMode     string
 	NATSURL     string
 	RedisAddr   string
 	MaxQuantity int
@@ -23,6 +24,7 @@ func LoadConfig() Config {
 		Env:         config.String("APP_ENV", "development"),
 		HTTPAddr:    config.String("HTTP_ADDR", ":8080"),
 		HealthAddr:  config.String("HEALTH_ADDR", ":9091"),
+		BusMode:     config.String("BUS_MODE", "nats"),
 		NATSURL:     config.String("NATS_URL", "nats://localhost:4222"),
 		RedisAddr:   config.String("REDIS_ADDR", "localhost:6379"),
 		MaxQuantity: config.Int("MAX_RESERVATION_QTY", 8),

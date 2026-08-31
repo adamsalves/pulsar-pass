@@ -62,9 +62,14 @@ func (h *ReservationHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reservationID := uid.New()
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		userID = "guest"
+	}
 	body, err := json.Marshal(map[string]any{
 		"reservation_id": reservationID,
 		"event_id":       req.EventID,
+		"user_id":        userID,
 		"quantity":       req.Quantity,
 	})
 	if err != nil {
@@ -123,8 +128,13 @@ func (h *ReservationHandler) ConfirmPayment(w http.ResponseWriter, r *http.Reque
 	}
 
 	reservationID := r.PathValue("id")
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		userID = "guest"
+	}
 	body, err := json.Marshal(map[string]any{
 		"reservation_id":       reservationID,
+		"user_id":              userID,
 		"payment_method_token": req.PaymentMethodToken,
 	})
 	if err != nil {
@@ -133,7 +143,7 @@ func (h *ReservationHandler) ConfirmPayment(w http.ResponseWriter, r *http.Reque
 	}
 	msg := eventbus.Message{
 		ID:      uid.New(),
-		Subject: envelope.SubjectReservationPayment,
+		Subject: envelope.SubjectPaymentProcess,
 		Payload: body,
 		Headers: map[string]string{
 			"X-Request-Id":    RequestIDFrom(r.Context()),
