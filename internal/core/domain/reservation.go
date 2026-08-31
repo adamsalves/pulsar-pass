@@ -38,6 +38,9 @@ type Reservation struct {
 
 // NewReservationInput carries the data needed to start a reservation.
 type NewReservationInput struct {
+	// ID is the client-provided reservation identifier. When empty a
+	// random UUID is generated.
+	ID          string
 	EventID     string
 	UserID      string
 	Quantity    int
@@ -54,8 +57,12 @@ func NewReservation(in NewReservationInput) *Reservation {
 	if currency == "" {
 		currency = "BRL"
 	}
+	id := in.ID
+	if id == "" {
+		id = uid.New()
+	}
 	return &Reservation{
-		ID:          uid.New(),
+		ID:          id,
 		EventID:     in.EventID,
 		UserID:      in.UserID,
 		Status:      ReservationStatusPending,
