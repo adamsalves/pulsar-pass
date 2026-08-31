@@ -38,6 +38,9 @@ type Reservation struct {
 
 // NewReservationInput carries the data needed to start a reservation.
 type NewReservationInput struct {
+	// ID is the client-provided reservation identifier. When empty a
+	// random UUID is generated.
+	ID          string
 	EventID     string
 	UserID      string
 	Quantity    int
@@ -54,8 +57,12 @@ func NewReservation(in NewReservationInput) *Reservation {
 	if currency == "" {
 		currency = "BRL"
 	}
+	id := in.ID
+	if id == "" {
+		id = uid.New()
+	}
 	return &Reservation{
-		ID:          uid.New(),
+		ID:          id,
 		EventID:     in.EventID,
 		UserID:      in.UserID,
 		Status:      ReservationStatusPending,
@@ -69,14 +76,14 @@ func NewReservation(in NewReservationInput) *Reservation {
 	}
 }
 
-// Confirm finalizes a pending reservation. It refuses late confirmations
-// past the retention window.
+// Confirm finalizes a pending reservation. There is deliberately no
+// expiry gate here: the payment service only charges inside the
+// retention window, so a succeeded payment is honored even if relay lag
+// delivers the event past ExpiresAt. Idempotent replay of an already
+// confirmed reservation is handled by the application layer.
 func (r *Reservation) Confirm(now time.Time) error {
 	if r.Status != ReservationStatusPending {
 		return invalidTransition(r.Status, ReservationStatusConfirmed)
-	}
-	if now.After(r.ExpiresAt) {
-		return ErrReservationExpired
 	}
 	confirmed := now
 	r.Status = ReservationStatusConfirmed

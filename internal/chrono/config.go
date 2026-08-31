@@ -15,7 +15,6 @@ type Config struct {
 	HealthAddr    string
 	DatabaseURL   string
 	NATSURL       string
-	RedisAddr     string
 	SweepInterval time.Duration
 	SweepBatch    int
 }
@@ -27,7 +26,6 @@ func LoadConfig() Config {
 		HealthAddr:    config.String("HEALTH_ADDR", ":9093"),
 		DatabaseURL:   config.String("DATABASE_URL", "postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable"),
 		NATSURL:       config.String("NATS_URL", "nats://localhost:4222"),
-		RedisAddr:     config.String("REDIS_ADDR", "localhost:6379"),
 		SweepInterval: config.Duration("SWEEP_INTERVAL", 5*time.Second),
 		SweepBatch:    config.Int("SWEEP_BATCH", 100),
 	}

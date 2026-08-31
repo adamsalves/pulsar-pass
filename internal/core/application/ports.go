@@ -22,6 +22,13 @@ func (SystemClock) Now() time.Time {
 	return time.Now().UTC()
 }
 
+// TxRunner executes fn inside the unit of work of the underlying store.
+// Repository adapters participating in the same context share the
+// transaction, which is what makes state change + outbox atomic.
+type TxRunner interface {
+	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // ReservationRepository persists reservation aggregates.
 type ReservationRepository interface {
 	Create(ctx context.Context, r *domain.Reservation) error
@@ -29,10 +36,13 @@ type ReservationRepository interface {
 	Update(ctx context.Context, r *domain.Reservation) error
 }
 
-// InventoryRepository mutates event capacity atomically. Implementations
-// must use conditional updates so that concurrent consumers can never
-// oversell (zero overbooking).
+// InventoryRepository reads events and mutates their capacity
+// atomically. Implementations must use conditional updates so that
+// concurrent consumers can never oversell (zero overbooking).
 type InventoryRepository interface {
+	// Event loads an event by id, mapping missing rows to
+	// domain.ErrNotFound.
+	Event(ctx context.Context, id string) (*domain.Event, error)
 	// ReserveCapacity consumes n units, returning domain.ErrSoldOut when
 	// capacity is exhausted.
 	ReserveCapacity(ctx context.Context, eventID string, n int) error

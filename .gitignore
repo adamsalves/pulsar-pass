@@ -4,5 +4,6 @@ coverage.out
 coverage.html
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store

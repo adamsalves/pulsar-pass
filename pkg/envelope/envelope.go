@@ -23,7 +23,6 @@ const (
 // Command subjects.
 const (
 	SubjectReservationReserve = "pulsarpass.reservations.commands.reserve"
-	SubjectReservationPayment = "pulsarpass.reservations.commands.confirm-payment"
 	SubjectPaymentProcess     = "pulsarpass.payments.commands.process"
 )
 
@@ -42,7 +41,6 @@ const (
 // adding a new version field value, never by breaking existing payloads.
 const (
 	TypeReservationReserve   = "reservation.reserve"
-	TypeReservationPayment   = "reservation.confirm-payment"
 	TypeTicketReserved       = "ticket.reserved"
 	TypeTicketConfirmed      = "ticket.confirmed"
 	TypeTicketReleased       = "ticket.released"
@@ -88,8 +86,6 @@ func SubjectFor(eventType string) string {
 	switch eventType {
 	case TypeReservationReserve:
 		return SubjectReservationReserve
-	case TypeReservationPayment:
-		return SubjectReservationPayment
 	case TypeTicketReserved:
 		return SubjectTicketReserved
 	case TypeTicketConfirmed:
