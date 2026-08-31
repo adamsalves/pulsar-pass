@@ -16,7 +16,9 @@ type fakeClock struct{ now time.Time }
 
 func (f *fakeClock) Now() time.Time { return f.now }
 
-type fakeReservations struct{ store map[string]*domain.Reservation }
+type fakeReservations struct {
+	store map[string]*domain.Reservation
+}
 
 func newFakeReservations() *fakeReservations {
 	return &fakeReservations{store: make(map[string]*domain.Reservation)}
