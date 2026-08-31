@@ -1,0 +1,113 @@
+package chrono
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"time"
+
+	"github.com/adamsalves/pulsar-pass/pkg/envelope"
+	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
+)
+
+// ExpiredReservation is a pending reservation whose retention window
+// elapsed.
+type ExpiredReservation struct {
+	ReservationID string
+	EventID       string
+	UserID        string
+	Quantity      int
+}
+
+// ReservationSource reads overdue reservations. The PostgreSQL
+// implementation must use SELECT ... FOR UPDATE SKIP LOCKED so that
+// multiple sweeper instances never claim the same row.
+type ReservationSource interface {
+	FindExpired(ctx context.Context, limit int) ([]ExpiredReservation, error)
+}
+
+// ReservationExpiredPayload is the compensation event published for each
+// overdue reservation.
+type ReservationExpiredPayload struct {
+	ReservationID string    `json:"reservation_id"`
+	EventID       string    `json:"event_id"`
+	UserID        string    `json:"user_id"`
+	Quantity      int       `json:"quantity"`
+	ExpiredAt     time.Time `json:"expired_at"`
+}
+
+// Sweeper periodically scans for expired reservations and publishes
+// reservation.expired. The Redis TTL is only an accelerator; this sweep
+// against PostgreSQL is the guarantee that no seat leaks.
+type Sweeper struct {
+	finder    ReservationSource
+	bus       eventbus.Publisher
+	log       *slog.Logger
+	interval  time.Duration
+	batchSize int
+}
+
+// NewSweeper wires the sweeper loop.
+func NewSweeper(finder ReservationSource, bus eventbus.Publisher, log *slog.Logger, interval time.Duration, batchSize int) *Sweeper {
+	return &Sweeper{
+		finder:    finder,
+		bus:       bus,
+		log:       log,
+		interval:  interval,
+		batchSize: batchSize,
+	}
+}
+
+// Run blocks until ctx is cancelled, sweeping on every tick.
+func (s *Sweeper) Run(ctx context.Context) {
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.sweep(ctx); err != nil {
+				s.log.Error("sweep failed", "error", err)
+			}
+		}
+	}
+}
+
+func (s *Sweeper) sweep(ctx context.Context) error {
+	if s.finder == nil || s.bus == nil {
+		return nil
+	}
+	expired, err := s.finder.FindExpired(ctx, s.batchSize)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, e := range expired {
+		payload, err := json.Marshal(ReservationExpiredPayload{
+			ReservationID: e.ReservationID,
+			EventID:       e.EventID,
+			UserID:        e.UserID,
+			Quantity:      e.Quantity,
+			ExpiredAt:     now,
+		})
+		if err != nil {
+			return err
+		}
+		msg := eventbus.Message{
+			// Stable id: each reservation expires exactly once (enforced
+			// by the state machine), so re-sweeps dedup on the broker.
+			ID:      e.ReservationID + "-expired",
+			Subject: envelope.SubjectReservationExpired,
+			Payload: payload,
+			Headers: map[string]string{
+				"Correlation-Id": e.ReservationID,
+			},
+		}
+		if err := s.bus.Publish(ctx, msg); err != nil {
+			return err
+		}
+		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
+	}
+	return nil
+}
