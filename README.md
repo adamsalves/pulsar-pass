@@ -60,6 +60,13 @@ make docker-build        # imagens dos 5 serviços
 make compose-down        # infra
 ```
 
+### Git conventions
+
+- Branch names and commit messages **in English**, following [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
+- Branch naming: `feat/<scope>`, `fix/<scope>`, `chore/<scope>`.
+- Atomic commits: one logical change per commit, tests included with the code they cover.
+- Pull request descriptions are written in Portuguese and kept detailed (context, per-service changes, tests, trade-offs).
+
 ## Layout
 
 ```
