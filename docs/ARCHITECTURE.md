@@ -33,7 +33,7 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 | Serviço | Responsabilidade | Comunicação |
 |---|---|---|
 | `pulsar-gateway` | Ingress HTTP: autenticação, rate limiting, validação e publicação de comandos. Idempotency-Key obrigatória nas mutações | HTTP → NATS (comandos) |
-| `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Lock distribuído via Postgres (autoridade) + Redis (acelerador) | Consome comandos/eventos, publica eventos |
+| `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Capacidade consumida por update atômico no Postgres (autoridade); Redis entra como acelerador no Ciclo 2 | Consome comandos/eventos, publica eventos |
 | `pulsar-chrono` | TTL worker: monitora `reservations.expires_at` (sweep no Postgres) e emite `reservation.expired` | Postgres → NATS |
 | `pulsar-payment` | Processa o pagamento na janela TTL (acquirer simulado no MVP) e emite `payment.succeeded` / `payment.failed` | Consome comando, publica eventos |
 | `pulsar-horizon` | Outbox relay: lê `outbox_events` das bases (core e payment) e publica no JetStream, garantindo entrega confiável | Postgres → NATS |
@@ -155,7 +155,7 @@ Eventos são inseridos na `outbox_events` **na mesma transação** da mudança d
 
 ### 7.4 TTL e reconciliação
 
-Redis mantém `hold:{reservation_id}` com `EX` = TTL (visibilidade rápida e notifications para o caminho feliz). A **fonte da verdade do vencimento** é `reservations.expires_at` no Postgres: o `pulsar-chrono` executa sweep periódico e emite `reservation.expired`. Mesmo que o Redis perca dados (failover, restart), nada vaza.
+Redis manterá `hold:{reservation_id}` com `EX` = TTL como acelerador (Ciclo 2). A **fonte da verdade do vencimento** é `reservations.expires_at` no Postgres: o `pulsar-chrono` executa sweep periódico com `FOR UPDATE SKIP LOCKED` e emite `reservation.expired`. Mesmo que o Redis perca dados (failover, restart), nada vaza.
 
 ### 7.5 Entrega e falhas
 
@@ -254,9 +254,9 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 
 | Ciclo | Escopo | Status |
 |---|---|---|
-| 0 | Fundação: blueprint, esqueleto dos 5 serviços, migrations, infra local | ✅ esta entrega |
-| 1 | Adaptadores reais: Postgres (capacidade atômica, outbox, dedup) + NATS JetStream (streams, consumers durables, DLQ) | próximo |
-| 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) | backlog |
+| 0 | Fundação: blueprint, esqueleto dos 5 serviços, migrations, infra local | ✅ |
+| 1 | Adaptadores reais: Postgres (capacidade atômica, outbox, dedup) + NATS JetStream (streams, consumers durables, DLQ) | ✅ |
+| 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) + acelerador Redis | próximo |
 | 3 | Observabilidade: OTel + métricas + dashboards | backlog |
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | backlog |
 | 5 | CI/CD (GitHub Actions), deploy, hardening | backlog |
