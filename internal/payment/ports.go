@@ -18,9 +18,18 @@ func (SystemClock) Now() time.Time {
 	return time.Now().UTC()
 }
 
+// TxRunner executes fn inside the unit of work of the underlying store.
+// Repository calls sharing the context commit atomically.
+type TxRunner interface {
+	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // PaymentRepository persists payment attempts.
 type PaymentRepository interface {
 	Create(ctx context.Context, p *Payment) error
+	// GetByIdempotencyKey loads an existing attempt for redelivered
+	// commands, mapping missing rows to ErrPaymentNotFound.
+	GetByIdempotencyKey(ctx context.Context, key string) (*Payment, error)
 	UpdateStatus(ctx context.Context, id string, status PaymentStatus, gatewayRef, failureReason string) error
 }
 

@@ -20,6 +20,15 @@ var ErrNotWired = errors.New("payment processor is not wired")
 // until the projection lands.
 var ErrContextNotFound = errors.New("reservation context not found")
 
+// ErrDuplicatePayment is returned by the repository when a payment with
+// the same idempotency key already exists — the signature of a
+// redelivered command.
+var ErrDuplicatePayment = errors.New("payment idempotency key already registered")
+
+// ErrPaymentNotFound is returned when a lookup by idempotency key finds
+// no row.
+var ErrPaymentNotFound = errors.New("payment not found")
+
 // PaymentRequested is the command consumed from the broker. It carries
 // no monetary fields: amount and currency come exclusively from the
 // reservation context projection, keeping pricing server-authoritative.
@@ -39,22 +48,27 @@ type PaymentOutcomePayload struct {
 }
 
 // Processor executes charges and records outcomes in the transactional
-// outbox; pulsar-horizon delivers them to the broker.
+// outbox; pulsar-horizon delivers them to the broker. Outcome writes
+// (status + outbox) commit atomically, and redelivered commands resume
+// from the stored payment instead of charging again.
 type Processor struct {
 	payments PaymentRepository
 	contexts ReservationContextRepository
 	outbox   OutboxRepository
+	tx       TxRunner
 	acquirer Acquirer
 	clock    Clock
 	log      *slog.Logger
 	source   string
 }
 
-// NewProcessor wires the payment use case.
+// NewProcessor wires the payment use case. tx is optional: when nil,
+// outcome writes run as separate statements (tests, tools).
 func NewProcessor(
 	payments PaymentRepository,
 	contexts ReservationContextRepository,
 	outbox OutboxRepository,
+	tx TxRunner,
 	acquirer Acquirer,
 	clock Clock,
 	log *slog.Logger,
@@ -63,6 +77,7 @@ func NewProcessor(
 		payments: payments,
 		contexts: contexts,
 		outbox:   outbox,
+		tx:       tx,
 		acquirer: acquirer,
 		clock:    clock,
 		log:      log,
@@ -84,27 +99,21 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 		return fmt.Errorf("load reservation context: %w", err)
 	}
 
-	userID := req.UserID
-	if userID == "" {
-		userID = ctxData.UserID
-	}
-	amount := ctxData.AmountCents
-	currency := ctxData.Currency
-	if currency == "" {
-		currency = "BRL"
-	}
-
-	pay := &Payment{
-		ID:             uid.New(),
-		ReservationID:  req.ReservationID,
-		UserID:         userID,
-		AmountCents:    amount,
-		Currency:       currency,
-		Status:         PaymentStatusPending,
-		IdempotencyKey: idempotencyKey,
-	}
-	if err := p.payments.Create(ctx, pay); err != nil {
+	pay, err := p.loadOrCreate(ctx, req, ctxData, idempotencyKey)
+	if err != nil {
 		return err
+	}
+	if pay.Status != PaymentStatusPending {
+		// A previous run already decided this payment but the outcome
+		// event may not have been delivered (crash between status and
+		// outbox writes). Re-record it from the stored state; the charge
+		// itself is never retried for decided payments.
+		p.log.Info("payment already decided; re-recording outcome",
+			"payment_id", pay.ID,
+			"reservation_id", pay.ReservationID,
+			"status", pay.Status,
+		)
+		return p.recordOutcome(ctx, pay)
 	}
 
 	if p.clock.Now().After(ctxData.ExpiresAt) {
@@ -113,9 +122,9 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 
 	charge, chargeErr := p.acquirer.Charge(ctx, ChargeRequest{
 		ReservationID:  req.ReservationID,
-		UserID:         userID,
-		AmountCents:    amount,
-		Currency:       currency,
+		UserID:         pay.UserID,
+		AmountCents:    pay.AmountCents,
+		Currency:       pay.Currency,
 		Token:          req.Token,
 		IdempotencyKey: idempotencyKey,
 	})
@@ -125,6 +134,40 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 	return p.finish(ctx, pay, charge.GatewayRef, "", true)
 }
 
+// loadOrCreate persists a fresh payment attempt or, for redelivered
+// commands, returns the existing one keyed by idempotency key.
+func (p *Processor) loadOrCreate(ctx context.Context, req PaymentRequested, ctxData ReservationContext, idempotencyKey string) (*Payment, error) {
+	userID := req.UserID
+	if userID == "" {
+		userID = ctxData.UserID
+	}
+	pay := &Payment{
+		ID:             uid.New(),
+		ReservationID:  req.ReservationID,
+		UserID:         userID,
+		AmountCents:    ctxData.AmountCents,
+		Currency:       ctxData.Currency,
+		Status:         PaymentStatusPending,
+		IdempotencyKey: idempotencyKey,
+	}
+	if pay.Currency == "" {
+		pay.Currency = "BRL"
+	}
+	err := p.payments.Create(ctx, pay)
+	if err == nil {
+		return pay, nil
+	}
+	if !errors.Is(err, ErrDuplicatePayment) {
+		return nil, err
+	}
+	existing, err := p.payments.GetByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		return nil, fmt.Errorf("load existing payment by idempotency key: %w", err)
+	}
+	return existing, nil
+}
+
+// finish persists the decision and its outcome event atomically.
 func (p *Processor) finish(ctx context.Context, pay *Payment, gatewayRef, reason string, approved bool) error {
 	status := PaymentStatusFailed
 	eventType := envelope.TypePaymentFailed
@@ -132,14 +175,22 @@ func (p *Processor) finish(ctx context.Context, pay *Payment, gatewayRef, reason
 		status = PaymentStatusSucceeded
 		eventType = envelope.TypePaymentSucceeded
 	}
-	if err := p.payments.UpdateStatus(ctx, pay.ID, status, gatewayRef, reason); err != nil {
-		return err
-	}
 	rec, err := p.record(eventType, pay, gatewayRef, reason)
 	if err != nil {
 		return err
 	}
-	if err := p.outbox.Enqueue(ctx, rec); err != nil {
+	write := func(txctx context.Context) error {
+		if err := p.payments.UpdateStatus(txctx, pay.ID, status, gatewayRef, reason); err != nil {
+			return err
+		}
+		return p.outbox.Enqueue(txctx, rec)
+	}
+	if p.tx == nil {
+		err = write(ctx)
+	} else {
+		err = p.tx.WithinTx(ctx, write)
+	}
+	if err != nil {
 		return err
 	}
 	if approved {
@@ -156,6 +207,26 @@ func (p *Processor) finish(ctx context.Context, pay *Payment, gatewayRef, reason
 		"reason", reason,
 	)
 	return nil
+}
+
+// recordOutcome re-enqueues the outcome event for an already decided
+// payment. A fresh event id may duplicate a previously delivered
+// outcome; downstream consumers are idempotent by design.
+func (p *Processor) recordOutcome(ctx context.Context, pay *Payment) error {
+	var eventType, gatewayRef, reason string
+	switch pay.Status {
+	case PaymentStatusSucceeded:
+		eventType, gatewayRef = envelope.TypePaymentSucceeded, pay.GatewayRef
+	case PaymentStatusFailed:
+		eventType, reason = envelope.TypePaymentFailed, pay.FailureReason
+	default:
+		return fmt.Errorf("cannot record outcome for payment in status %q", pay.Status)
+	}
+	rec, err := p.record(eventType, pay, gatewayRef, reason)
+	if err != nil {
+		return err
+	}
+	return p.outbox.Enqueue(ctx, rec)
 }
 
 func (p *Processor) record(eventType string, pay *Payment, gatewayRef, reason string) (OutboxRecord, error) {

@@ -17,6 +17,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
+	"github.com/adamsalves/pulsar-pass/pkg/pgtx"
 )
 
 func main() {
@@ -44,6 +45,7 @@ func run() error {
 		pgadapter.NewPayments(pool),
 		contexts,
 		pgadapter.NewOutbox(pool),
+		pgtx.NewManager(pool),
 		&payment.SimulatedAcquirer{
 			FailureRate: cfg.SimulatedFailureRate,
 			Delay:       cfg.ChargeDelay,
