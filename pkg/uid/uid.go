@@ -1,10 +1,18 @@
-// Package uid generates random RFC 4122 version 4 UUIDs.
+// Package uid generates and validates random RFC 4122 version 4 UUIDs.
 package uid
 
 import (
 	"crypto/rand"
 	"encoding/hex"
+
+	"github.com/google/uuid"
 )
+
+// IsValid reports whether s is a valid UUID in any accepted textual
+// representation.
+func IsValid(s string) bool {
+	return uuid.Validate(s) == nil
+}
 
 // New returns a random version 4 UUID. Per the crypto/rand contract on
 // Go >= 1.24, rand.Read never fails.

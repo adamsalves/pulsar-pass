@@ -164,13 +164,29 @@ func TestReserveCreatesPendingReservationWithOutbox(t *testing.T) {
 	}
 }
 
+func TestReserveRejectsInvalidClientID(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+	inv := newFakeInventory(testEvent("event-1", 10))
+	svc := newService(clock, inv, &fakeOutbox{})
+
+	_, err := svc.Reserve(context.Background(), application.ReserveCommand{
+		ReservationID: "not-a-uuid",
+		EventID:       "event-1",
+		UserID:        "user-1",
+		Quantity:      1,
+	})
+	if !errors.Is(err, domain.ErrInvalidID) {
+		t.Errorf("error = %v, want ErrInvalidID", err)
+	}
+}
+
 func TestReserveUsesClientProvidedID(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
 	inv := newFakeInventory(testEvent("event-1", 10))
 	svc := newService(clock, inv, &fakeOutbox{})
 
 	res, err := svc.Reserve(context.Background(), application.ReserveCommand{
-		ReservationID: "client-id-1",
+		ReservationID: "c0a80101-0000-4000-8000-000000000001",
 		EventID:       "event-1",
 		UserID:        "user-1",
 		Quantity:      1,
@@ -178,7 +194,7 @@ func TestReserveUsesClientProvidedID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reserve() error = %v", err)
 	}
-	if res.ID != "client-id-1" {
+	if res.ID != "c0a80101-0000-4000-8000-000000000001" {
 		t.Errorf("id = %q, want client-provided id", res.ID)
 	}
 }

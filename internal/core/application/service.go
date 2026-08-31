@@ -7,6 +7,7 @@ import (
 
 	"github.com/adamsalves/pulsar-pass/internal/core/domain"
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
+	"github.com/adamsalves/pulsar-pass/pkg/uid"
 )
 
 // ReservationService orchestrates the reservation state machine. All
@@ -104,6 +105,9 @@ const (
 func (s *ReservationService) reserve(ctx context.Context, cmd ReserveCommand) (*domain.Reservation, error) {
 	if cmd.EventID == "" || cmd.UserID == "" || cmd.Quantity <= 0 {
 		return nil, domain.ErrInvalidQuantity
+	}
+	if cmd.ReservationID != "" && !uid.IsValid(cmd.ReservationID) {
+		return nil, domain.ErrInvalidID
 	}
 	now := s.clock.Now()
 	event, err := s.inventory.Event(ctx, cmd.EventID)
