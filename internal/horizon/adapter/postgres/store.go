@@ -14,7 +14,8 @@ import (
 // Store is the horizon.OutboxStore backed by PostgreSQL. FetchBatch is a
 // plain read: crash-safety comes from publishing with the outbox event id
 // as Nats-Msg-Id — a crash between publish and mark re-publishes later
-// and the broker deduplicates.
+// and the broker deduplicates within its window; beyond it, consumers
+// absorb duplicates idempotently.
 type Store struct {
 	pool *pgxpool.Pool
 }
