@@ -1,0 +1,41 @@
+flowchart LR
+    U[Usuário]
+
+    subgraph Edge
+        GW[pulsar-gateway]
+    end
+
+    subgraph Broker[NATS JetStream]
+        RC[(RESERVATIONS<br/>commands + events)]
+        PC[(PAYMENTS<br/>commands + events)]
+    end
+
+    subgraph Services
+        C[pulsar-core<br/>estoque + máquina de estados]
+        CH[pulsar-chrono<br/>sweeper de TTL]
+        P[pulsar-payment<br/>acquirer simulado]
+        H[pulsar-horizon<br/>outbox relay]
+    end
+
+    subgraph Data
+        PG1[(PostgreSQL<br/>pulsar_core)]
+        PG2[(PostgreSQL<br/>pulsar_payment)]
+        RD[(Redis<br/>holds + TTL)]
+    end
+
+    U -->|HTTPS| GW
+    GW -->|reservation.reserve| RC
+    GW -->|payment.process| PC
+    RC --> C
+    C <--> PG1
+    C <-.->|holds| RD
+    RC --> CH
+    CH --> PG1
+    CH -->|reservation.expired| RC
+    PC --> P
+    P <--> PG2
+    P -->|payment.succeeded / failed| PC
+    H -->|lê outbox| PG1
+    H -->|lê outbox| PG2
+    H -->|publica com Nats-Msg-Id| RC
+    H -->|publica com Nats-Msg-Id| PC

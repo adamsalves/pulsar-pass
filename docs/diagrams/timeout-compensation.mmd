@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant CH as pulsar-chrono
+    participant PG as PostgreSQL (core)
+    participant N as NATS JetStream
+    participant C as pulsar-core
+    participant R as Redis
+    participant U as Usuário
+
+    Note over CH,PG: rede de segurança — sweeper periódico (independe de Redis)
+    CH->>PG: SELECT ... FROM reservations WHERE status = 'PENDING' AND expires_at < now() FOR UPDATE SKIP LOCKED LIMIT $1
+    CH->>N: publish reservation.expired (Nats-Msg-Id)
+    CH->>R: DEL hold:{reservation_id} (higiene)
+    N->>C: consome evento
+    C->>PG: BEGIN; reservation → EXPIRED; reserved_count-1; tickets → AVAILABLE; outbox (ticket.released); COMMIT
+    Note over C,PG: mesma transação garante consistência estado + evento
+    N->>CH: ack
+    U-->>U: recebe 409/410 ao tentar pagar após expiração

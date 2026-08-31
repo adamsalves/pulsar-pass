@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant U as Usuário
+    participant GW as pulsar-gateway
+    participant N as NATS JetStream
+    participant C as pulsar-core
+    participant PG as PostgreSQL (core)
+    participant R as Redis
+    participant P as pulsar-payment
+
+    U->>GW: POST /v1/reservations (Idempotency-Key)
+    GW->>N: publish reservation.reserve (Nats-Msg-Id)
+    N->>C: consome comando
+    C->>PG: BEGIN; UPDATE events SET reserved_count = reserved_count + 1 WHERE id = $1 AND reserved_count + sold_count < capacity; INSERT reservation (PENDING, expires_at); INSERT outbox (ticket.reserved); COMMIT
+    alt commit ok (assento garantido)
+        C->>R: SET hold:{reservation_id} EX 600 (acelerador)
+        C-->>GW: resposta (reservation_id, expires_at)
+        GW-->>U: 201 Created
+        U->>GW: POST /v1/reservations/{id}/payment (Idempotency-Key)
+        GW->>N: publish payment.process
+        N->>P: consome comando
+        P->>P: acquirer.charge() (simulado)
+        P->>N: publish payment.succeeded (Nats-Msg-Id)
+        N->>C: consome evento
+        C->>PG: BEGIN; reservation → CONFIRMED; reserved_count-1; sold_count+1; tickets → SOLD; outbox (ticket.confirmed); COMMIT
+        GW-->>U: ingresso confirmado
+    else capacidade esgotada
+        C-->>GW: rejeição imediata (sold out)
+        GW-->>U: 409 Conflict
+    end

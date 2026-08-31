@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> PENDING: reserve (UPDATE atômico de capacidade + INSERT em uma transação)
+    PENDING --> CONFIRMED: payment.succeeded
+    PENDING --> FAILED: payment.failed
+    PENDING --> EXPIRED: reservation.expired (sweeper / TTL)
+    PENDING --> CANCELLED: cancelamento do usuário
+    CONFIRMED --> [*]
+    FAILED --> [*]
+    EXPIRED --> [*]
+    CANCELLED --> [*]
