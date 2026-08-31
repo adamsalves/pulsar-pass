@@ -1,11 +1,11 @@
 module github.com/adamsalves/pulsar-pass
 
-go 1.26.0
+go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/nats-io/nats-server/v2 v2.14.6
+	github.com/nats-io/nats-server/v2 v2.12.15
 	github.com/nats-io/nats.go v1.53.1
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 )

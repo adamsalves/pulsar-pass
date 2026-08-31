@@ -84,10 +84,6 @@ func (f *fakeAcquirer) Charge(_ context.Context, _ payment.ChargeRequest) (payme
 	return payment.ChargeResult{GatewayRef: f.ref}, nil
 }
 
-func newProcessor(clock *fakeClock, acquirer *fakeAcquirer, contexts *fakeContexts, outbox *fakeOutbox) *payment.Processor {
-	return payment.NewProcessor(newFakePayments(), contexts, outbox, acquirer, clock, slog.Default())
-}
-
 func testContext(id string, expiresAt time.Time) payment.ReservationContext {
 	return payment.ReservationContext{
 		ReservationID: id,

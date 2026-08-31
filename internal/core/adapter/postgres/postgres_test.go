@@ -65,7 +65,9 @@ func applyCoreMigrations(ctx context.Context, dsn string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	for _, path := range []string{
 		"../../../../migrations/core/000001_init.up.sql",

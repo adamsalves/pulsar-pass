@@ -37,7 +37,9 @@ func (o *Outbox) Enqueue(ctx context.Context, records ...payment.OutboxRecord) e
 			rec.CorrelationID, rec.CausationID, string(rec.Payload), rec.OccurredAt)
 	}
 	br := q.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() {
+		_ = br.Close()
+	}()
 	for range records {
 		if _, err := br.Exec(); err != nil {
 			return err
