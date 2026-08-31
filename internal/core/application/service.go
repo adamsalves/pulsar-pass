@@ -1,0 +1,199 @@
+package application
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/adamsalves/pulsar-pass/internal/core/domain"
+	"github.com/adamsalves/pulsar-pass/pkg/envelope"
+)
+
+// ReservationService orchestrates the reservation state machine. All
+// emitted events go through the transactional outbox; nothing is
+// published directly from this service.
+type ReservationService struct {
+	reservations ReservationRepository
+	inventory    InventoryRepository
+	outbox       OutboxRepository
+	clock        Clock
+	ttl          time.Duration
+	source       string
+}
+
+// NewReservationService wires the reservation use cases.
+func NewReservationService(
+	reservations ReservationRepository,
+	inventory InventoryRepository,
+	outbox OutboxRepository,
+	clock Clock,
+	ttl time.Duration,
+) *ReservationService {
+	return &ReservationService{
+		reservations: reservations,
+		inventory:    inventory,
+		outbox:       outbox,
+		clock:        clock,
+		ttl:          ttl,
+		source:       "pulsar-core",
+	}
+}
+
+// ReserveCommand carries the user intent to hold tickets.
+type ReserveCommand struct {
+	EventID     string
+	UserID      string
+	Quantity    int
+	AmountCents int64
+	Currency    string
+}
+
+// Reserve consumes capacity, creates the pending reservation and
+// enqueues ticket.reserved. Repository adapters guarantee that capacity,
+// reservation and outbox rows commit in a single transaction.
+func (s *ReservationService) Reserve(ctx context.Context, cmd ReserveCommand) (*domain.Reservation, error) {
+	if cmd.EventID == "" || cmd.UserID == "" || cmd.Quantity <= 0 {
+		return nil, domain.ErrInvalidQuantity
+	}
+	if err := s.inventory.ReserveCapacity(ctx, cmd.EventID, cmd.Quantity); err != nil {
+		return nil, err
+	}
+	res := domain.NewReservation(domain.NewReservationInput{
+		EventID:     cmd.EventID,
+		UserID:      cmd.UserID,
+		Quantity:    cmd.Quantity,
+		AmountCents: cmd.AmountCents,
+		Currency:    cmd.Currency,
+		TTL:         s.ttl,
+		Now:         s.clock.Now(),
+	})
+	if err := s.reservations.Create(ctx, res); err != nil {
+		return nil, err
+	}
+	rec, err := s.record(envelope.TypeTicketReserved, res.ID, "", TicketReservedPayload{
+		ReservationID: res.ID,
+		EventID:       res.EventID,
+		UserID:        res.UserID,
+		Quantity:      res.Quantity,
+		AmountCents:   res.AmountCents,
+		ExpiresAt:     res.ExpiresAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.outbox.Enqueue(ctx, rec); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// Confirm finalizes a pending reservation after payment success.
+func (s *ReservationService) Confirm(ctx context.Context, reservationID string) (*domain.Reservation, error) {
+	res, err := s.load(ctx, reservationID)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	if err := res.Confirm(now); err != nil {
+		return nil, err
+	}
+	if err := s.inventory.CommitSold(ctx, res.EventID, res.Quantity); err != nil {
+		return nil, err
+	}
+	if err := s.reservations.Update(ctx, res); err != nil {
+		return nil, err
+	}
+	rec, err := s.record(envelope.TypeTicketConfirmed, res.ID, "", TicketConfirmedPayload{
+		ReservationID: res.ID,
+		EventID:       res.EventID,
+		Quantity:      res.Quantity,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, s.outbox.Enqueue(ctx, rec)
+}
+
+// Expire releases a pending reservation whose TTL elapsed.
+func (s *ReservationService) Expire(ctx context.Context, reservationID string) (*domain.Reservation, error) {
+	return s.release(ctx, reservationID, reasonExpired)
+}
+
+// Fail releases a pending reservation rejected by payment.
+func (s *ReservationService) Fail(ctx context.Context, reservationID string) (*domain.Reservation, error) {
+	return s.release(ctx, reservationID, reasonFailed)
+}
+
+// Cancel releases a pending reservation cancelled by the user.
+func (s *ReservationService) Cancel(ctx context.Context, reservationID string) (*domain.Reservation, error) {
+	return s.release(ctx, reservationID, reasonCancelled)
+}
+
+type releaseReason string
+
+const (
+	reasonExpired   releaseReason = "expired"
+	reasonFailed    releaseReason = "payment_failed"
+	reasonCancelled releaseReason = "cancelled"
+)
+
+func (s *ReservationService) release(ctx context.Context, reservationID string, reason releaseReason) (*domain.Reservation, error) {
+	res, err := s.load(ctx, reservationID)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	switch reason {
+	case reasonExpired:
+		err = res.Expire(now)
+	case reasonFailed:
+		err = res.MarkFailed(now)
+	default:
+		err = res.Cancel(now)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := s.inventory.ReleaseCapacity(ctx, res.EventID, res.Quantity); err != nil {
+		return nil, err
+	}
+	if err := s.reservations.Update(ctx, res); err != nil {
+		return nil, err
+	}
+	rec, err := s.record(envelope.TypeTicketReleased, res.ID, "", TicketReleasedPayload{
+		ReservationID: res.ID,
+		EventID:       res.EventID,
+		Quantity:      res.Quantity,
+		Reason:        string(reason),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, s.outbox.Enqueue(ctx, rec)
+}
+
+func (s *ReservationService) load(ctx context.Context, id string) (*domain.Reservation, error) {
+	if id == "" {
+		return nil, domain.ErrNotFound
+	}
+	return s.reservations.Get(ctx, id)
+}
+
+func (s *ReservationService) record(eventType, correlationID, causationID string, payload any) (OutboxRecord, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return OutboxRecord{}, err
+	}
+	env := envelope.New(eventType, s.source, correlationID, causationID, json.RawMessage(data))
+	return OutboxRecord{
+		ID:            env.EventID,
+		Subject:       envelope.SubjectFor(eventType),
+		EventType:     env.EventType,
+		EventVersion:  env.EventVersion,
+		Source:        env.Source,
+		CorrelationID: env.CorrelationID,
+		CausationID:   env.CausationID,
+		Payload:       data,
+		OccurredAt:    env.OccurredAt,
+	}, nil
+}
