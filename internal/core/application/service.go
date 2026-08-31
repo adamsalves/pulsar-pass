@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/adamsalves/pulsar-pass/internal/core/domain"
@@ -109,6 +111,17 @@ func (s *ReservationService) reserve(ctx context.Context, cmd ReserveCommand) (*
 	if cmd.ReservationID != "" && !uid.IsValid(cmd.ReservationID) {
 		return nil, domain.ErrInvalidID
 	}
+	// Idempotent replay guard: the gateway generates the reservation id,
+	// so a Create conflict on redelivery means the command was already
+	// applied. Returning the existing reservation avoids relying on the
+	// transaction rollback and keeps the consumer quiet.
+	if cmd.ReservationID != "" {
+		if existing, err := s.reservations.Get(ctx, cmd.ReservationID); err == nil {
+			return existing, nil
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+	}
 	now := s.clock.Now()
 	event, err := s.inventory.Event(ctx, cmd.EventID)
 	if err != nil {
@@ -155,6 +168,17 @@ func (s *ReservationService) confirm(ctx context.Context, reservationID string) 
 	if err != nil {
 		return nil, err
 	}
+	// Idempotent replay: the outcome event was already applied in a
+	// previous delivery, so skip side effects entirely.
+	if res.Status == domain.ReservationStatusConfirmed {
+		return res, nil
+	}
+	if res.Status != domain.ReservationStatusPending {
+		return nil, fmt.Errorf("%w: cannot confirm reservation in status %s", domain.ErrInvalidTransition, res.Status)
+	}
+	// No expiry gate here: the payment service only charges inside the
+	// retention window, so a succeeded payment is honored even if relay
+	// lag delivers the event past ExpiresAt.
 	now := s.clock.Now()
 	if err := res.Confirm(now); err != nil {
 		return nil, err
@@ -190,6 +214,16 @@ func (s *ReservationService) releaseInTx(ctx context.Context, reservationID stri
 	res, err := s.load(ctx, reservationID)
 	if err != nil {
 		return nil, err
+	}
+	// Idempotent replay: any terminal (released) state means the seat is
+	// already back in the pool, so skip side effects entirely. This also
+	// covers cross-cause replays, e.g. payment.failed arriving after the
+	// sweeper already expired the reservation.
+	switch res.Status {
+	case domain.ReservationStatusExpired,
+		domain.ReservationStatusFailed,
+		domain.ReservationStatusCancelled:
+		return res, nil
 	}
 	now := s.clock.Now()
 	switch reason {

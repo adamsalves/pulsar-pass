@@ -76,14 +76,14 @@ func NewReservation(in NewReservationInput) *Reservation {
 	}
 }
 
-// Confirm finalizes a pending reservation. It refuses late confirmations
-// past the retention window.
+// Confirm finalizes a pending reservation. There is deliberately no
+// expiry gate here: the payment service only charges inside the
+// retention window, so a succeeded payment is honored even if relay lag
+// delivers the event past ExpiresAt. Idempotent replay of an already
+// confirmed reservation is handled by the application layer.
 func (r *Reservation) Confirm(now time.Time) error {
 	if r.Status != ReservationStatusPending {
 		return invalidTransition(r.Status, ReservationStatusConfirmed)
-	}
-	if now.After(r.ExpiresAt) {
-		return ErrReservationExpired
 	}
 	confirmed := now
 	r.Status = ReservationStatusConfirmed

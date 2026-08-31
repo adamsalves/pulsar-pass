@@ -262,11 +262,16 @@ func TestConfirmFlow(t *testing.T) {
 	}
 }
 
-func TestConfirmAfterExpiryFails(t *testing.T) {
+func TestConfirmAfterExpiryIsHonored(t *testing.T) {
+	// Policy: the payment service only charges inside the retention
+	// window, so a succeeded payment arriving after ExpiresAt (relay lag,
+	// consumer backlog) still confirms the reservation. The user paid;
+	// the seat is theirs.
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: base}
+	outbox := &fakeOutbox{}
 	inv := newFakeInventory(testEvent("event-1", 10))
-	svc := newService(clock, inv, &fakeOutbox{})
+	svc := newService(clock, inv, outbox)
 
 	res, err := svc.Reserve(context.Background(), application.ReserveCommand{
 		EventID: "event-1", UserID: "user-1", Quantity: 1,
@@ -275,8 +280,86 @@ func TestConfirmAfterExpiryFails(t *testing.T) {
 		t.Fatalf("Reserve() error = %v", err)
 	}
 	clock.now = base.Add(11 * time.Minute)
-	if _, err := svc.Confirm(context.Background(), res.ID); !errors.Is(err, domain.ErrReservationExpired) {
-		t.Errorf("error = %v, want ErrReservationExpired", err)
+	confirmed, err := svc.Confirm(context.Background(), res.ID)
+	if err != nil {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	if confirmed.Status != domain.ReservationStatusConfirmed {
+		t.Errorf("status = %q, want CONFIRMED", confirmed.Status)
+	}
+	if inv.events["event-1"].SoldCount != 1 {
+		t.Errorf("sold_count = %d, want 1", inv.events["event-1"].SoldCount)
+	}
+}
+
+func TestConfirmReplayIsIdempotent(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	outbox := &fakeOutbox{}
+	inv := newFakeInventory(testEvent("event-1", 10))
+	svc := newService(clock, inv, outbox)
+
+	res, err := svc.Reserve(context.Background(), application.ReserveCommand{
+		EventID: "event-1", UserID: "user-1", Quantity: 2,
+	})
+	if err != nil {
+		t.Fatalf("Reserve() error = %v", err)
+	}
+	if _, err := svc.Confirm(context.Background(), res.ID); err != nil {
+		t.Fatalf("first Confirm() error = %v", err)
+	}
+	eventsAfterFirst := len(outbox.records)
+	soldAfterFirst := inv.events["event-1"].SoldCount
+
+	// Redelivered payment.succeeded: no extra side effects.
+	replayed, err := svc.Confirm(context.Background(), res.ID)
+	if err != nil {
+		t.Fatalf("replayed Confirm() error = %v", err)
+	}
+	if replayed.Status != domain.ReservationStatusConfirmed {
+		t.Errorf("status = %q, want CONFIRMED", replayed.Status)
+	}
+	if inv.events["event-1"].SoldCount != soldAfterFirst {
+		t.Errorf("sold_count = %d, want %d (no double conversion)", inv.events["event-1"].SoldCount, soldAfterFirst)
+	}
+	if len(outbox.records) != eventsAfterFirst {
+		t.Errorf("outbox records = %d, want %d (no duplicate event)", len(outbox.records), eventsAfterFirst)
+	}
+}
+
+func TestReleaseReplayIsIdempotent(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	outbox := &fakeOutbox{}
+	inv := newFakeInventory(testEvent("event-1", 10))
+	svc := newService(clock, inv, outbox)
+
+	res, err := svc.Reserve(context.Background(), application.ReserveCommand{
+		EventID: "event-1", UserID: "user-1", Quantity: 2,
+	})
+	if err != nil {
+		t.Fatalf("Reserve() error = %v", err)
+	}
+	clock.now = base.Add(11 * time.Minute)
+	if _, err := svc.Expire(context.Background(), res.ID); err != nil {
+		t.Fatalf("first Expire() error = %v", err)
+	}
+	eventsAfterFirst := len(outbox.records)
+	reservedAfterFirst := inv.events["event-1"].ReservedCount
+
+	// Redelivered reservation.expired (and cross-cause payment.failed):
+	// both must be no-ops.
+	if _, err := svc.Expire(context.Background(), res.ID); err != nil {
+		t.Fatalf("replayed Expire() error = %v", err)
+	}
+	if _, err := svc.Fail(context.Background(), res.ID); err != nil {
+		t.Fatalf("cross-cause Fail() error = %v", err)
+	}
+	if inv.events["event-1"].ReservedCount != reservedAfterFirst {
+		t.Errorf("reserved_count = %d, want %d (no double release)", inv.events["event-1"].ReservedCount, reservedAfterFirst)
+	}
+	if len(outbox.records) != eventsAfterFirst {
+		t.Errorf("outbox records = %d, want %d (no duplicate event)", len(outbox.records), eventsAfterFirst)
 	}
 }
 
@@ -352,8 +435,13 @@ func TestFailAndCancelFlows(t *testing.T) {
 	}
 }
 
-func TestDoubleConfirmFails(t *testing.T) {
-	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+func TestConfirmRejectedForReleasedReservation(t *testing.T) {
+	// A reservation already released by a compensation (expired/failed/
+	// cancelled) can never be confirmed: the seat went back to the pool.
+	// This surfaces as an error so the DLQ captures the refund-worthy
+	// conflict instead of silently acking.
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: base}
 	inv := newFakeInventory(testEvent("event-1", 10))
 	svc := newService(clock, inv, &fakeOutbox{})
 
@@ -363,10 +451,11 @@ func TestDoubleConfirmFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reserve() error = %v", err)
 	}
-	if _, err := svc.Confirm(context.Background(), res.ID); err != nil {
-		t.Fatalf("first Confirm() error = %v", err)
+	clock.now = base.Add(11 * time.Minute)
+	if _, err := svc.Expire(context.Background(), res.ID); err != nil {
+		t.Fatalf("Expire() error = %v", err)
 	}
 	if _, err := svc.Confirm(context.Background(), res.ID); !errors.Is(err, domain.ErrInvalidTransition) {
-		t.Errorf("second Confirm() error = %v, want ErrInvalidTransition", err)
+		t.Errorf("Confirm() on released reservation error = %v, want ErrInvalidTransition", err)
 	}
 }
