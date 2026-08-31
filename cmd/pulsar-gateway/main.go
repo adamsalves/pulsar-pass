@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/adamsalves/pulsar-pass/internal/broker"
 	"github.com/adamsalves/pulsar-pass/internal/gateway"
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
@@ -30,9 +32,10 @@ func run() error {
 	cfg := gateway.LoadConfig()
 	log := logger.New(cfg.Env)
 
-	bus := eventbus.NewMemory()
-	logCommands(bus, log, envelope.SubjectReservationReserve)
-	logCommands(bus, log, envelope.SubjectReservationPayment)
+	bus, err := selectBus(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
 
 	handler := gateway.NewReservationHandler(bus, log, cfg.MaxQuantity)
 	apiServer := gateway.NewServer(cfg.HTTPAddr, gateway.Routes(handler, log))
@@ -53,7 +56,7 @@ func run() error {
 		"env", cfg.Env,
 		"http_addr", cfg.HTTPAddr,
 		"health_addr", cfg.HealthAddr,
-		"bus", "in-memory (NATS wiring next cycle)",
+		"bus", cfg.BusMode,
 	)
 
 	select {
@@ -65,17 +68,43 @@ func run() error {
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	_ = bus.Close(shutdownCtx)
 	if err := apiServer.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
 	return healthServer.Shutdown(shutdownCtx)
 }
 
-// logCommands registers a development-only handler so the in-memory bus
-// accepts published commands before the JetStream wiring exists.
-func logCommands(bus eventbus.Subscriber, log interface {
-	Info(msg string, args ...any)
-}, subject string) {
+// selectBus resolves the message bus: JetStream in production, with an
+// in-memory fallback in development when the broker is unreachable.
+func selectBus(ctx context.Context, cfg gateway.Config, log *slog.Logger) (eventbus.Bus, error) {
+	if cfg.BusMode == "memory" {
+		return memoryBusWithDevHandlers(log), nil
+	}
+	if cfg.BusMode != "nats" {
+		return nil, fmt.Errorf("unknown BUS_MODE %q (use nats or memory)", cfg.BusMode)
+	}
+	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	if err == nil {
+		return bus, nil
+	}
+	if cfg.Env == "production" {
+		return nil, err
+	}
+	log.Warn("NATS unreachable; falling back to in-memory bus", "error", err.Error())
+	return memoryBusWithDevHandlers(log), nil
+}
+
+func memoryBusWithDevHandlers(log *slog.Logger) eventbus.Bus {
+	bus := eventbus.NewMemory()
+	logCommands(bus, log, envelope.SubjectReservationReserve)
+	logCommands(bus, log, envelope.SubjectPaymentProcess)
+	return bus
+}
+
+// logCommands registers development-only handlers so the in-memory bus
+// accepts published commands before any consumer exists.
+func logCommands(bus eventbus.Subscriber, log *slog.Logger, subject string) {
 	_ = bus.Subscribe(subject, "", func(_ context.Context, msg eventbus.Message) error {
 		log.Info("command received",
 			"subject", msg.Subject,

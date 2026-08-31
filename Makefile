@@ -21,6 +21,15 @@ run-gateway:
 run-core:
 	$(GO) run ./cmd/pulsar-core
 
+run-chrono:
+	$(GO) run ./cmd/pulsar-chrono
+
+run-payment:
+	$(GO) run ./cmd/pulsar-payment
+
+run-horizon:
+	$(GO) run ./cmd/pulsar-horizon
+
 vet:
 	$(GO) vet ./...
 

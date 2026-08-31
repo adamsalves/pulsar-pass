@@ -11,6 +11,7 @@ type Event struct {
 	Venue         string
 	StartsAt      time.Time
 	SaleOpensAt   time.Time
+	PriceCents    int64
 	Capacity      int
 	ReservedCount int
 	SoldCount     int

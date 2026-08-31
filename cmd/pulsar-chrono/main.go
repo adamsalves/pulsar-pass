@@ -8,9 +8,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adamsalves/pulsar-pass/internal/broker"
 	"github.com/adamsalves/pulsar-pass/internal/chrono"
+	chronoadapter "github.com/adamsalves/pulsar-pass/internal/chrono/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
 
@@ -28,12 +31,24 @@ func run() error {
 	cfg := chrono.LoadConfig()
 	log := logger.New(cfg.Env)
 
+	pool, err := pgpool.New(ctx, cfg.DatabaseURL, pgpool.Options{MaxConns: 5})
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer pool.Close()
+
+	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	if err != nil {
+		return err
+	}
+
+	source := chronoadapter.NewSource(pool)
+	sweeper := chrono.NewSweeper(source, bus, log, cfg.SweepInterval, cfg.SweepBatch)
+	go sweeper.Run(ctx)
+
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
-
-	sweeper := chrono.NewSweeper(nil, nil, log, cfg.SweepInterval, cfg.SweepBatch)
-	go sweeper.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -47,7 +62,6 @@ func run() error {
 		"sweep_interval", cfg.SweepInterval.String(),
 		"sweep_batch", cfg.SweepBatch,
 	)
-	log.Info("reservation source and broker adapters are wired in the next cycle; sweeper is idle")
 
 	select {
 	case err := <-errCh:
@@ -58,5 +72,6 @@ func run() error {
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	_ = bus.Close(shutdownCtx)
 	return healthServer.Shutdown(shutdownCtx)
 }

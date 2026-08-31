@@ -77,3 +77,9 @@ func (m *Memory) Publish(_ context.Context, msg Message) error {
 	}
 	return nil
 }
+
+// Close satisfies the Bus interface; the in-memory bus holds no
+// resources.
+func (m *Memory) Close(context.Context) error {
+	return nil
+}

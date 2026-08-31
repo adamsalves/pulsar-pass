@@ -31,6 +31,20 @@ func Int(key string, fallback int) int {
 	return n
 }
 
+// Float returns the environment variable named by key parsed as float64,
+// or fallback when unset or unparsable.
+func Float(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
+}
+
 // Duration returns the environment variable named by key parsed as a
 // time.Duration (e.g. "10m"), or fallback when unset or unparsable.
 func Duration(key string, fallback time.Duration) time.Duration {

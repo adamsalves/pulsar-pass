@@ -9,6 +9,7 @@ type TicketReservedPayload struct {
 	UserID        string    `json:"user_id"`
 	Quantity      int       `json:"quantity"`
 	AmountCents   int64     `json:"amount_cents"`
+	Currency      string    `json:"currency"`
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
