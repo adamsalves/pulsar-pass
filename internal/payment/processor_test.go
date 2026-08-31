@@ -38,7 +38,9 @@ func (f *fakePayments) UpdateStatus(_ context.Context, id string, status payment
 	return nil
 }
 
-type fakeContexts struct{ store map[string]payment.ReservationContext }
+type fakeContexts struct {
+	store map[string]payment.ReservationContext
+}
 
 func newFakeContexts(rcs ...payment.ReservationContext) *fakeContexts {
 	m := make(map[string]payment.ReservationContext, len(rcs))
