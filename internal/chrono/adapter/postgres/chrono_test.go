@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -77,13 +78,14 @@ func applyChronoMigrations(ctx context.Context, dsn string) error {
 	return nil
 }
 
-func seedChronoReservation(t *testing.T, eventID, userID string, expiresAt string) string {
+func seedChronoReservation(t *testing.T, eventID, userID, expiresExpr string) string {
 	t.Helper()
-	var id string
-	err := chronoTestDB(t).QueryRow(context.Background(), `
+	q := fmt.Sprintf(`
 		INSERT INTO reservations (event_id, user_id, quantity, amount_cents, currency, expires_at)
-		VALUES ($1, $2, 1, 1000, 'BRL', $3::timestamptz)
-		RETURNING id`, eventID, userID, expiresAt).Scan(&id)
+		VALUES ($1, $2, 1, 1000, 'BRL', %s)
+		RETURNING id`, expiresExpr)
+	var id string
+	err := chronoTestDB(t).QueryRow(context.Background(), q, eventID, userID).Scan(&id)
 	if err != nil {
 		t.Fatalf("seed reservation: %v", err)
 	}
