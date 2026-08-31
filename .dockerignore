@@ -1,0 +1,10 @@
+.git
+bin/
+dist/
+docs/
+deployments/
+scripts/
+migrations/
+*.md
+.env
+.env.*

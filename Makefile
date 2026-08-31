@@ -56,8 +56,9 @@ compose-down:
 	docker compose -f deployments/docker-compose.yml down
 
 docker-build:
-	docker build -f deployments/docker/Dockerfile --build-arg SVC=pulsar-gateway -t pulsarpass/pulsar-gateway:dev .
-	docker build -f deployments/docker/Dockerfile --build-arg SVC=pulsar-core -t pulsarpass/pulsar-core:dev .
+	@for svc in $(SERVICES); do \
+		docker build -f deployments/docker/Dockerfile --build-arg SVC=$$svc -t pulsarpass/$$svc:dev . || exit 1; \
+	done
 
 clean:
 	rm -rf bin
