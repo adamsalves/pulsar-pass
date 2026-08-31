@@ -6,7 +6,7 @@ ARG SVC
 # `docker build` runs honest about being unreleased binaries.
 ARG VERSION=dev
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ cmd/
 COPY internal/ internal/
 COPY pkg/ pkg/
