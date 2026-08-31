@@ -259,4 +259,5 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) | backlog |
 | 3 | Observabilidade: OTel + métricas + dashboards | backlog |
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | backlog |
-| 5 | CI/CD (GitHub Actions), deploy, hardening | backlog |
+| 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
+| 6 | Deploy (cluster + observabilidade) e hardening | backlog |
