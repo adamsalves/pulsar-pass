@@ -29,9 +29,19 @@ var ErrDuplicatePayment = errors.New("payment idempotency key already registered
 // no row.
 var ErrPaymentNotFound = errors.New("payment not found")
 
+// ErrNotOwner is returned when the payment command's user does not
+// match the reservation owner projected from ticket.reserved. The
+// rejection is terminal and side-effect free: no payment is recorded,
+// no outcome is published and the acquirer is never called, so an
+// impostor can neither charge against someone else's reservation nor
+// release it. The redelivered command eventually reaches the DLQ.
+var ErrNotOwner = errors.New("payment submitted by non-owner")
+
 // PaymentRequested is the command consumed from the broker. It carries
 // no monetary fields: amount and currency come exclusively from the
 // reservation context projection, keeping pricing server-authoritative.
+// UserID is the payer identity; Handle rejects commands whose user does
+// not own the projected reservation.
 type PaymentRequested struct {
 	ReservationID string `json:"reservation_id"`
 	UserID        string `json:"user_id"`
@@ -90,13 +100,24 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 	if p.payments == nil || p.contexts == nil || p.outbox == nil || p.acquirer == nil {
 		return ErrNotWired
 	}
-	if req.ReservationID == "" || idempotencyKey == "" {
-		return errors.New("reservation_id and idempotency key are required")
+	if req.ReservationID == "" || req.UserID == "" || idempotencyKey == "" {
+		return errors.New("reservation_id, user_id and idempotency key are required")
 	}
 
 	ctxData, err := p.contexts.Get(ctx, req.ReservationID)
 	if err != nil {
 		return fmt.Errorf("load reservation context: %w", err)
+	}
+
+	if req.UserID != ctxData.UserID {
+		// The projection is authoritative: only the user who created the
+		// reservation may pay it. Reject before any write so the state of
+		// the reservation stays untouched for the legitimate owner.
+		p.log.Warn("payment rejected: submitter is not the reservation owner",
+			"reservation_id", req.ReservationID,
+			"submitted_by", req.UserID,
+		)
+		return fmt.Errorf("%w: user %q does not own reservation", ErrNotOwner, req.UserID)
 	}
 
 	pay, err := p.loadOrCreate(ctx, req, ctxData, idempotencyKey)
@@ -137,14 +158,10 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 // loadOrCreate persists a fresh payment attempt or, for redelivered
 // commands, returns the existing one keyed by idempotency key.
 func (p *Processor) loadOrCreate(ctx context.Context, req PaymentRequested, ctxData ReservationContext, idempotencyKey string) (*Payment, error) {
-	userID := req.UserID
-	if userID == "" {
-		userID = ctxData.UserID
-	}
 	pay := &Payment{
 		ID:             uid.New(),
 		ReservationID:  req.ReservationID,
-		UserID:         userID,
+		UserID:         ctxData.UserID,
 		AmountCents:    ctxData.AmountCents,
 		Currency:       ctxData.Currency,
 		Status:         PaymentStatusPending,
