@@ -33,7 +33,7 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 | Serviço | Responsabilidade | Comunicação |
 |---|---|---|
 | `pulsar-gateway` | Ingress HTTP: autenticação, rate limiting, validação e publicação de comandos. Idempotency-Key obrigatória nas mutações | HTTP → NATS (comandos) |
-| `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Capacidade consumida por update atômico no Postgres (autoridade); Redis entra como acelerador no Ciclo 2 | Consome comandos/eventos, publica eventos |
+| `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Capacidade consumida por update atômico no Postgres (autoridade); Redis registra `hold:{reservation_id}` como acelerador, com degradação graciosa | Consome comandos/eventos, publica eventos |
 | `pulsar-chrono` | TTL worker: monitora `reservations.expires_at` (sweep no Postgres) e emite `reservation.expired` | Postgres → NATS |
 | `pulsar-payment` | Processa o pagamento na janela TTL (acquirer simulado no MVP) e emite `payment.succeeded` / `payment.failed` | Consome comando, publica eventos |
 | `pulsar-horizon` | Outbox relay: lê `outbox_events` das bases (core e payment) e publica no JetStream, garantindo entrega confiável | Postgres → NATS |
@@ -155,7 +155,7 @@ Eventos são inseridos na `outbox_events` **na mesma transação** da mudança d
 
 ### 7.4 TTL e reconciliação
 
-Redis manterá `hold:{reservation_id}` com `EX` = TTL como acelerador (Ciclo 2). A **fonte da verdade do vencimento** é `reservations.expires_at` no Postgres: o `pulsar-chrono` executa sweep periódico com `FOR UPDATE SKIP LOCKED` e emite `reservation.expired`. Mesmo que o Redis perca dados (failover, restart), nada vaza.
+Redis mantém `hold:{reservation_id}` com `EX` = TTL restante como acelerador: escrito pelo `pulsar-core` após o commit da reserva e removido na confirmação/liberação (falha do Redis vira log de warning — `internal/holds`). A **fonte da verdade do vencimento** é `reservations.expires_at` no Postgres: o `pulsar-chrono` executa sweep periódico com `FOR UPDATE SKIP LOCKED`, emite `reservation.expired` e faz a higiene do hold (`DEL`). Mesmo que o Redis perca dados (failover, restart), nada vaza.
 
 ### 7.5 Entrega e falhas
 
@@ -243,7 +243,7 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | `HEALTH_ADDR` | todos | `:9091`–`:9095` | Porta liveness/readiness |
 | `HTTP_ADDR` | gateway | `:8080` | Porta da API |
 | `NATS_URL` | gateway, core, chrono, payment, horizon | `nats://localhost:4222` | Broker |
-| `REDIS_ADDR` | gateway, core | `localhost:6379` | Fast-path de hold |
+| `REDIS_ADDR` | core, chrono | `localhost:6379` | Fast-path de hold (`hold:{reservation_id}`); degradação graciosa |
 | `DATABASE_URL` | core / payment | DBs `pulsar_core` / `pulsar_payment` | Postgres do serviço |
 | `RESERVATION_TTL` | core | `10m` | Janela de retenção |
 | `SWEEP_INTERVAL` / `SWEEP_BATCH` | chrono | `5s` / `100` | Sweeper de expiração |
@@ -256,8 +256,8 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 |---|---|---|
 | 0 | Fundação: blueprint, esqueleto dos 5 serviços, migrations, infra local | ✅ |
 | 1 | Adaptadores reais: Postgres (capacidade atômica, outbox, dedup) + NATS JetStream (streams, consumers durables, DLQ) | ✅ |
-| 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) + acelerador Redis | próximo |
-| 3 | Observabilidade: OTel + métricas + dashboards | backlog |
+| 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) + acelerador Redis | ✅ |
+| 3 | Observabilidade: OTel + métricas + dashboards | próximo |
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | backlog |
 | 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
 | 6 | Deploy (cluster + observabilidade) e hardening | backlog |

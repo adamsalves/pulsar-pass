@@ -12,7 +12,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [1 — Adaptadores reais](#ciclo-1--adaptadores-reais) | Postgres (capacidade atômica, outbox, dedup) + NATS JetStream | ✅ concluído |
 | [1½ — Hardening de consistência](#ciclo-1½--hardening-de-consistência) | Correções de idempotência, atomicidade e pricing pós-Ciclo 1 | ✅ concluído |
 | [5 — CI + Release (antecipado)](#ciclo-5--ci--release-antecipado) | GitHub Actions, GoReleaser, GHCR multi-arch, dependabot | ✅ concluído |
-| [2 — Saga ponta a ponta](#próximo--ciclo-2) | Saga e2e com testcontainers + acelerador Redis | 🔜 próximo |
+| [2 — Saga ponta a ponta](#ciclo-2--saga-ponta-a-ponta) | Saga e2e com testcontainers + acelerador Redis | ✅ concluído |
 
 ---
 
@@ -165,14 +165,45 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 ---
 
-## Próximo — Ciclo 2
+## Ciclo 2 — Saga ponta a ponta
 
-**Escopo previsto (roadmap):** saga ponta a ponta (sucesso + compensações) validada com testes de integração testcontainers, e acelerador Redis (`hold:{reservation_id}` como fast-path, Postgres permanece autoridade).
+**Objetivo:** validar a saga completa (gateway → core → payment → core) contra infraestrutura real — sucesso, recusa e expiração — e implementar o acelerador Redis (`hold:{reservation_id}`) com degradação graciosa, mantendo o PostgreSQL como autoridade.
 
-**Critérios de saída sugeridos:**
-- Teste e2e: gateway → core → payment → core, cobrindo sucesso, recusa e expiração.
-- Redis fast-path integrado ao core com degradação graciosa.
-- Documento de ciclo adicionado a este arquivo.
+**Commits:** `f849b59` → `e0fc9b0`
+
+### Entregas
+
+**Acelerador Redis (`internal/holds/`)**
+- `internal/holds/holds.go` — `Store` com `Set`/`Release`/`Exists`: grava `hold:{id}` com o TTL restante, remove no estado terminal. Degradação graciosa por construção: erro do Redis vira log de warning e o fluxo segue (`degraded`); **cada operação é limitada a 200ms** (`opTimeout`) — um Redis fora custa no máximo isso por chamada no hot path; `REDIS_ADDR=` (vazio) desliga o acelerador de verdade via `config.StringAllowEmpty` (distingue unset de vazio — o fallback de `config.String` tornava o kill switch inalcançável); `REDIS_ADDR` inalcançável degrada com warnings. Testes cobrem ciclo de vida, TTL não positivo, store desabilitado e Redis inalcançável dentro do cap (`holds_test.go`).
+- `internal/core/application/ports.go` — porta `HoldStore` (`Set`/`Release`), documentada como acelerador opcional; PostgreSQL permanece autoridade.
+- `internal/core/application/service.go` — `NewReservationService` recebe o hold store opcional (nil desliga). `Reserve` grava o hold **após o commit** (`Reserve`), `Confirm`/`Fail`/`Expire`/`Cancel` removem via `releaseHold` — cleanup nunca bloqueia nem falha a compensação.
+- `internal/chrono/sweeper.go` — porta `HoldCleaner`; o sweep publica **todos** os eventos `reservation.expired` do lote e só então faz `DEL hold:{id}` (higiene do diagrama §5.2; a chave expira sozinha de qualquer forma) — Redis lento pode atrasar a limpeza da chave, nunca a liberação dos assentos.
+- Wiring: `cmd/pulsar-core/main.go` e `cmd/pulsar-chrono/main.go` instanciam o store; `internal/chrono/config.go` ganha `REDIS_ADDR`; `pkg/config` ganha `StringAllowEmpty` (testado em `config_test.go`).
+
+**Consumidores extraídos para reuso (refactor)**
+- `internal/core/subscribers.go` — `Subscribers.Register`: os 4 consumidores do core (`core-reserve`, `core-payment-succeeded`, `core-payment-failed`, `core-reservation-expired`) saem do `main.go`; decode + use case + log agora são código de biblioteca.
+- `internal/payment/subscribers.go` — `Subscribers.Register`: projeção `payment-context` e comando `payment-process` idem.
+- Mains (`cmd/pulsar-core`, `cmd/pulsar-payment`) ficam só com wiring de infraestrutura; a suíte e2e registra **exatamente os mesmos consumidores** da produção.
+
+**Saga e2e com testcontainers (`internal/e2e/`)**
+- `internal/e2e/harness_test.go` — `boot` monta a topologia completa: Postgres real com as duas bases (`pulsar_core_e2e` + `pulsar_payment_e2e`) e migrations aplicadas, Redis real, NATS JetStream embutido (padrão já usado em `pkg/eventbus/jetstream_test.go`), gateway HTTP em `httptest`, relay do horizon nas duas outboxes e sweeper do chrono rodando de verdade. Só o acquirer é simulado (`SimulatedAcquirer` com taxa de falha 0; token `fail-me` força recusa).
+- `internal/e2e/saga_test.go` — três caminhos, todos via HTTP do gateway:
+  - `TestSagaSuccessPath` — reserva → projeção do contexto (pricing `2 × price`) → hold no Redis → charge aprovado → `CONFIRMED`, `reserved_count`/`sold_count` corretos, hold liberado e as duas outboxes drenadas.
+  - `TestSagaPaymentDeclined` — charge recusado → `FAILED`, assento de volta ao pool, `payment` reprovado e outbox do core drenada.
+  - `TestSagaExpirationTTL` — TTL vence naturalmente (sem força bruta no banco, que dessincronizaria a projeção do payment) → sweeper expira, hold limpo e pagamento tardio rejeitado pela checagem da janela.
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Hold é acelerador, nunca fonte da verdade | `internal/holds/holds.go` (degradação embutida, 200ms/op) + porta `HoldStore` opcional |
+| Hold fora da transação | `Reserve`/`releaseHold` em `service.go` chamam após o commit do `inTx` |
+| Redis nunca atrasa compensação | `sweep` publica os eventos antes da higiene dos holds (`sweeper.go`) |
+| Sem assento vazado mesmo com Redis morto | sweeper do Postgres (Ciclo 1) segue como rede de segurança; Redis só acelera |
+| Saga e2e executada de verdade | `internal/e2e/` com os mesmos consumidores dos binários |
+
+### Testes
+- `internal/holds/holds_test.go` — 4 testes (lifecycle, TTL inválido, desabilitado, Redis inalcançável).
+- `internal/e2e/saga_test.go` — 3 testes ponta a ponta com testcontainers (sucesso, recusa, expiração), validando estado no Postgres (core e payment), chaves no Redis e drenagem das outboxes.
 
 ---
 

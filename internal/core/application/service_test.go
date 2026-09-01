@@ -117,6 +117,7 @@ func newService(clock *fakeClock, inventory *fakeInventory, outbox *fakeOutbox) 
 		nil,
 		clock,
 		10*time.Minute,
+		nil,
 	)
 }
 

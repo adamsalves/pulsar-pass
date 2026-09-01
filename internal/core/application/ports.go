@@ -52,6 +52,18 @@ type InventoryRepository interface {
 	CommitSold(ctx context.Context, eventID string, n int) error
 }
 
+// HoldStore is the optional Redis fast-path for reservation holds.
+// It is an accelerator only: implementations must degrade gracefully
+// (never fail the flow) and PostgreSQL remains the authority for the
+// inventory and for the retention window.
+type HoldStore interface {
+	// Set records the hold with the remaining retention window as TTL.
+	Set(ctx context.Context, reservationID string, ttl time.Duration) error
+	// Release deletes the hold once the reservation reaches a terminal
+	// state.
+	Release(ctx context.Context, reservationID string) error
+}
+
 // OutboxRecord is a row of the transactional outbox.
 type OutboxRecord struct {
 	ID            string

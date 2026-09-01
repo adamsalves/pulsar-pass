@@ -22,10 +22,12 @@ type Config struct {
 // LoadConfig reads pulsar-core settings from the environment.
 func LoadConfig() Config {
 	return Config{
-		Env:            config.String("APP_ENV", "development"),
-		HealthAddr:     config.String("HEALTH_ADDR", ":9092"),
-		NATSURL:        config.String("NATS_URL", "nats://localhost:4222"),
-		RedisAddr:      config.String("REDIS_ADDR", "localhost:6379"),
+		Env:        config.String("APP_ENV", "development"),
+		HealthAddr: config.String("HEALTH_ADDR", ":9092"),
+		NATSURL:    config.String("NATS_URL", "nats://localhost:4222"),
+		// Empty REDIS_ADDR explicitly disables the hold accelerator;
+		// only an unset variable falls back to the default.
+		RedisAddr:      config.StringAllowEmpty("REDIS_ADDR", "localhost:6379"),
 		DatabaseURL:    config.String("DATABASE_URL", "postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable"),
 		ReservationTTL: config.Duration("RESERVATION_TTL", 10*time.Minute),
 	}

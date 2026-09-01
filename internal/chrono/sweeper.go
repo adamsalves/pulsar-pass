@@ -26,6 +26,15 @@ type ReservationSource interface {
 	FindExpired(ctx context.Context, limit int) ([]ExpiredReservation, error)
 }
 
+// HoldCleaner is the optional Redis fast-path hygiene hook: it deletes
+// hold:{reservation_id} once the batch of compensation events is out.
+// The key expires on its own, so a failing cleaner only delays key
+// reuse; the store caps each call and cleanup runs after publishing,
+// so Redis can never delay the release of seats.
+type HoldCleaner interface {
+	Release(ctx context.Context, reservationID string) error
+}
+
 // ReservationExpiredPayload is the compensation event published for each
 // overdue reservation.
 type ReservationExpiredPayload struct {
@@ -42,16 +51,19 @@ type ReservationExpiredPayload struct {
 type Sweeper struct {
 	finder    ReservationSource
 	bus       eventbus.Publisher
+	holds     HoldCleaner
 	log       *slog.Logger
 	interval  time.Duration
 	batchSize int
 }
 
-// NewSweeper wires the sweeper loop.
-func NewSweeper(finder ReservationSource, bus eventbus.Publisher, log *slog.Logger, interval time.Duration, batchSize int) *Sweeper {
+// NewSweeper wires the sweeper loop. holds is the optional Redis hold
+// cleaner (nil disables it).
+func NewSweeper(finder ReservationSource, bus eventbus.Publisher, holds HoldCleaner, log *slog.Logger, interval time.Duration, batchSize int) *Sweeper {
 	return &Sweeper{
 		finder:    finder,
 		bus:       bus,
+		holds:     holds,
 		log:       log,
 		interval:  interval,
 		batchSize: batchSize,
@@ -108,6 +120,14 @@ func (s *Sweeper) sweep(ctx context.Context) error {
 			return err
 		}
 		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
+	}
+	// Hold hygiene runs only after every compensation event of the
+	// batch is published: a slow or failing Redis may delay key
+	// cleanup, never the release of the seats themselves.
+	if s.holds != nil {
+		for _, e := range expired {
+			_ = s.holds.Release(ctx, e.ReservationID)
+		}
 	}
 	return nil
 }
