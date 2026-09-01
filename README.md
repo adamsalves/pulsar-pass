@@ -55,7 +55,9 @@ Health/readiness por serviço: `GET :9091..9095/healthz` e `/readyz`. Sem NATS n
 ## Desenvolvimento
 
 ```bash
-make fmt vet lint test   # qualidade (testes de integração usam Docker via testcontainers)
+make fmt vet lint test   # qualidade (-race por padrão, paridade com o CI)
+SKIP_E2E=1 make test     # iteração rápida sem Docker (pula a suíte testcontainers)
+make test-cover          # cobertura, igual ao job de test do CI
 make docker-build        # imagens dos 5 serviços
 make compose-down        # infra
 ```

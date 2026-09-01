@@ -4,7 +4,7 @@ SERVICES := pulsar-gateway pulsar-core pulsar-chrono pulsar-payment pulsar-horiz
 CORE_DB      ?= postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable
 PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=disable
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build release-check release-build release-snapshot clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -40,8 +40,13 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint is not installed"; exit 1; }
 	golangci-lint run
 
+# Parity with the CI test job: the race detector runs by default.
+# SKIP_E2E=1 skips the testcontainers suite for a faster local loop.
 test:
-	$(GO) test ./...
+	$(GO) test -race ./...
+
+test-cover:
+	$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
 tidy:
 	$(GO) mod tidy
