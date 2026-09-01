@@ -47,6 +47,7 @@ type Option func(*settings)
 type settings struct {
 	failureThreshold int
 	cooldown         time.Duration
+	observer         Observer
 }
 
 // WithBreaker tunes the circuit breaker: after failureThreshold
@@ -69,6 +70,7 @@ type Store struct {
 	client *redis.Client
 	log    *slog.Logger
 	br     *breaker
+	obs    Observer
 }
 
 // New wires the hold store against addr. An empty addr disables the
@@ -98,6 +100,7 @@ func New(addr string, log *slog.Logger, opts ...Option) *Store {
 		}),
 		log: log,
 		br:  newBreaker(cfg.failureThreshold, cfg.cooldown),
+		obs: cfg.observer,
 	}
 }
 
@@ -108,12 +111,16 @@ func (s *Store) Set(ctx context.Context, reservationID string, ttl time.Duration
 	if s.client == nil || ttl <= 0 {
 		return nil
 	}
+	start := time.Now()
 	if !s.br.allow() {
+		s.observe("set", start, OpShortCircuited)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := s.client.Set(ctx, Key(reservationID), "1", ttl).Err(); err != nil {
+	err := s.client.Set(ctx, Key(reservationID), "1", ttl).Err()
+	s.observe("set", start, outcomeOf(err))
+	if err != nil {
 		s.degraded("set", reservationID, err)
 		return nil
 	}
@@ -127,12 +134,16 @@ func (s *Store) Release(ctx context.Context, reservationID string) error {
 	if s.client == nil {
 		return nil
 	}
+	start := time.Now()
 	if !s.br.allow() {
+		s.observe("release", start, OpShortCircuited)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := s.client.Del(ctx, Key(reservationID)).Err(); err != nil {
+	err := s.client.Del(ctx, Key(reservationID)).Err()
+	s.observe("release", start, outcomeOf(err))
+	if err != nil {
 		s.degraded("release", reservationID, err)
 		return nil
 	}
@@ -146,12 +157,15 @@ func (s *Store) Exists(ctx context.Context, reservationID string) bool {
 	if s.client == nil {
 		return false
 	}
+	start := time.Now()
 	if !s.br.allow() {
+		s.observe("exists", start, OpShortCircuited)
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	n, err := s.client.Exists(ctx, Key(reservationID)).Result()
+	s.observe("exists", start, outcomeOf(err))
 	if err != nil {
 		s.degraded("exists", reservationID, err)
 		return false
@@ -172,6 +186,9 @@ func (s *Store) Close() error {
 // by the breaker threshold, and the open transition is announced once.
 func (s *Store) degraded(op, reservationID string, err error) {
 	if opened := s.br.failure(); opened {
+		if s.obs != nil {
+			s.obs.BreakerOpened()
+		}
 		s.log.Warn("redis hold breaker open; fast-path short-circuited until cooldown elapses",
 			"cooldown", s.br.cooldown,
 		)
@@ -187,8 +204,28 @@ func (s *Store) degraded(op, reservationID string, err error) {
 // single log when the store had been degraded.
 func (s *Store) recovered() {
 	if s.br.success() {
+		if s.obs != nil {
+			s.obs.BreakerRecovered()
+		}
 		s.log.Info("redis hold recovered; fast-path re-enabled")
 	}
+}
+
+// observe forwards one operation attempt to the metrics observer when
+// one is wired; without an observer the store pays nothing.
+func (s *Store) observe(op string, start time.Time, outcome OpOutcome) {
+	if s.obs == nil {
+		return
+	}
+	s.obs.ObserveOp(op, time.Since(start), outcome)
+}
+
+// outcomeOf maps a Redis result to the metric outcome.
+func outcomeOf(err error) OpOutcome {
+	if err != nil {
+		return OpDegraded
+	}
+	return OpSuccess
 }
 
 // breaker counts consecutive failures and, past the threshold,
