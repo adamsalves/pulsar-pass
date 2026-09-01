@@ -2,7 +2,7 @@
 
 Sistema de reserva de ingressos para eventos de alta demanda (*flash sales*): milhares de usuários disputando estoque limitado no mesmo segundo, com retenção temporária de assento (TTL), pagamento assíncrono e **zero overbooking**.
 
-> Blueprint completo: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Diagramas: [`docs/diagrams/`](docs/diagrams/)
+> Blueprint completo: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Diagramas: [`docs/diagrams/`](docs/diagrams/) · Diário de ciclos: [`docs/CYCLES.md`](docs/CYCLES.md)
 
 ## Stack
 
@@ -63,7 +63,7 @@ make compose-down        # infra
 ### Git conventions
 
 - Branch names and commit messages **in English**, following [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
-- Branch naming: `feat/<scope>`, `fix/<scope>`, `chore/<scope>`.
+- Branch naming: `feat/<scope>`, `fix/<scope>`, `chore/<scope>`, `docs/<scope>`.
 - Atomic commits: one logical change per commit, tests included with the code they cover.
 - Pull request descriptions are written in Portuguese and kept detailed (context, per-service changes, tests, trade-offs).
 
@@ -103,4 +103,4 @@ docs/                 # blueprint de arquitetura e diagramas
 
 ## Roadmap
 
-Ciclo 0 (fundação) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI + releases ✅ → deploy/hardening. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos).
+Ciclo 0 (fundação) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI + releases ✅ → deploy/hardening. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos) e [`docs/CYCLES.md`](docs/CYCLES.md) (o que foi feito em cada ciclo, com referências ao código).
