@@ -105,10 +105,14 @@ func TestStoreDegradesGracefullyWhenRedisUnreachable(t *testing.T) {
 	if err := store.Set(ctx, "res-4", time.Minute); err != nil {
 		t.Fatalf("Set() must degrade gracefully, got error %v", err)
 	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("degraded Set must stay under the 200ms op cap (with slack); took %v", elapsed)
+	}
+	start = time.Now()
 	if err := store.Release(ctx, "res-4"); err != nil {
 		t.Fatalf("Release() must degrade gracefully, got error %v", err)
 	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatalf("degraded calls must fail fast; took %v", time.Since(start))
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("degraded Release must stay under the 200ms op cap (with slack); took %v", elapsed)
 	}
 }

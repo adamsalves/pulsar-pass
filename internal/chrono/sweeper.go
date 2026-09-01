@@ -27,9 +27,10 @@ type ReservationSource interface {
 }
 
 // HoldCleaner is the optional Redis fast-path hygiene hook: it deletes
-// hold:{reservation_id} after the compensation event is published. The
-// key expires on its own, so a failing cleaner only costs early reuse
-// of the key space — it must never block the sweep.
+// hold:{reservation_id} once the batch of compensation events is out.
+// The key expires on its own, so a failing cleaner only delays key
+// reuse; the store caps each call and cleanup runs after publishing,
+// so Redis can never delay the release of seats.
 type HoldCleaner interface {
 	Release(ctx context.Context, reservationID string) error
 }
@@ -118,10 +119,15 @@ func (s *Sweeper) sweep(ctx context.Context) error {
 		if err := s.bus.Publish(ctx, msg); err != nil {
 			return err
 		}
-		if s.holds != nil {
+		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
+	}
+	// Hold hygiene runs only after every compensation event of the
+	// batch is published: a slow or failing Redis may delay key
+	// cleanup, never the release of the seats themselves.
+	if s.holds != nil {
+		for _, e := range expired {
 			_ = s.holds.Release(ctx, e.ReservationID)
 		}
-		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
 	}
 	return nil
 }

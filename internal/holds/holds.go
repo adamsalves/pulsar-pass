@@ -16,6 +16,11 @@ import (
 // KeyPrefix namespaces hold keys on the shared Redis instance.
 const KeyPrefix = "hold:"
 
+// opTimeout caps every Redis round trip. The hold is an accelerator:
+// a slow or unavailable Redis must cost at most this much per
+// operation, never the flow itself.
+const opTimeout = 200 * time.Millisecond
+
 // Key returns the Redis key that accelerates a reservation.
 func Key(reservationID string) string {
 	return KeyPrefix + reservationID
@@ -57,6 +62,8 @@ func (s *Store) Set(ctx context.Context, reservationID string, ttl time.Duration
 	if s.client == nil || ttl <= 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
 	if err := s.client.Set(ctx, Key(reservationID), "1", ttl).Err(); err != nil {
 		s.degraded("set", reservationID, err)
 	}
@@ -69,6 +76,8 @@ func (s *Store) Release(ctx context.Context, reservationID string) error {
 	if s.client == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
 	if err := s.client.Del(ctx, Key(reservationID)).Err(); err != nil {
 		s.degraded("release", reservationID, err)
 	}
@@ -81,6 +90,8 @@ func (s *Store) Exists(ctx context.Context, reservationID string) bool {
 	if s.client == nil {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
 	n, err := s.client.Exists(ctx, Key(reservationID)).Result()
 	if err != nil {
 		s.degraded("exists", reservationID, err)
