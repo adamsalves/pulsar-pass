@@ -13,6 +13,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [1½ — Hardening de consistência](#ciclo-1½--hardening-de-consistência) | Correções de idempotência, atomicidade e pricing pós-Ciclo 1 | ✅ concluído |
 | [5 — CI + Release (antecipado)](#ciclo-5--ci--release-antecipado) | GitHub Actions, GoReleaser, GHCR multi-arch, dependabot | ✅ concluído |
 | [2 — Saga ponta a ponta](#ciclo-2--saga-ponta-a-ponta) | Saga e2e com testcontainers + acelerador Redis | ✅ concluído |
+| [2½ — Hardening pós-Ciclo 2](#ciclo-2½--hardening-pós-ciclo-2) | Posse da reserva no payment, `-race` no `make test`, circuit breaker do hold | ✅ concluído |
 
 ---
 
@@ -204,6 +205,44 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 ### Testes
 - `internal/holds/holds_test.go` — 4 testes (lifecycle, TTL inválido, desabilitado, Redis inalcançável).
 - `internal/e2e/saga_test.go` — 3 testes ponta a ponta com testcontainers (sucesso, recusa, expiração), validando estado no Postgres (core e payment), chaves no Redis e drenagem das outboxes.
+
+---
+
+## Ciclo 2½ — Hardening pós-Ciclo 2
+
+**Objetivo:** fechar os follow-ups do review do PR #14 — autorização de posse no payment, paridade do race detector entre loop local e CI, e custo de um outage contínuo do acelerador Redis.
+
+**Commits:** `cd87a42` → `f48bf81`
+
+### Entregas
+
+**Posse da reserva no payment (#15, PR #19)**
+- `internal/payment/processor.go` — `Handle` compara `req.UserID` com `ctxData.UserID` (fonte autoritativa: projeção do `ticket.reserved`) e rejeita com o sentinel `ErrNotOwner` **antes de qualquer write**; `user_id` passa a ser obrigatório e o fallback anônimo do `loadOrCreate` (vazio → dono) foi removido — era bypass silencioso. Decisão de design: rejeição *side-effect free* — sem payment row, sem `payment.failed` (um impostor não pode liberar a reserva da vítima); o comando NAKado esgota `MaxDeliver` e cai na DLQ, dando visibilidade do ataque.
+- `internal/e2e/harness_test.go` — `createReservation` retorna o `X-User-Id` criado; `payReservation` recebe o pagador (o harness deixou de codificar o cruzamento de usuários); helper `paymentCount`.
+- `internal/e2e/saga_test.go` — `TestSagaPaymentByNonOwnerRejected`: impostor tenta pagar → reserva permanece PENDING com zero payments; dono paga depois → CONFIRMED.
+
+**Paridade de race detector (#17, PR #20)**
+- `Makefile` — `test` roda `-race` por padrão (paridade com o job de test do CI); `test-cover` espelha o job exato (`-covermode=atomic -coverprofile`).
+- `internal/e2e/harness_test.go` — `SKIP_E2E=1` pula a suíte testcontainers via `t.Skip` em `bootTTL` — sem build tag, os testes seguem rodando por padrão e o CI não muda. Custo medido: e2e sob `-race` ~24s local.
+- `README.md` — seção de desenvolvimento com os três caminhos (`test`, `SKIP_E2E=1`, `test-cover`).
+
+**Circuit breaker do hold Redis (#16, PR #21)**
+- `internal/holds/holds.go` — breaker interno: após `defaultFailureThreshold` (5) falhas consecutivas abre por `defaultCooldown` (30s) e toda operação short-circuita **sem round trip**; a primeira operação pós-cooldown é a sonda half-open (`allow`/`success`/`failure`) — sucesso fecha, falha rearma a janela. Logs apenas nas transições (`degraded` por falha enquanto fechado, limitado ao threshold; um anúncio de abertura; um recovery) — fim do spam por operação. `WithBreaker(threshold, cooldown)` como option variádica de `New`; call sites existentes (`cmd/pulsar-core`, `cmd/pulsar-chrono`, e2e) seguem nos defaults. Postgres permanece autoridade: breaker aberto é miss de acelerador, nunca falha do fluxo.
+- Follow-ups registrados: #22 (métricas de degradação — Ciclo 3) e #23 (identidade real no gateway; o fallback `guest` contorna a posse — hardening).
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Só o dono paga a reserva | `processor.go` (`ErrNotOwner` antes de qualquer write) + `TestSagaPaymentByNonOwnerRejected` |
+| Comando anônimo não assume o dono | `user_id` obrigatório em `Handle` (`TestHandleMissingUserRejected`) |
+| Race detectada no loop local | `Makefile` `test` com `-race` (paridade com o CI) |
+| Outage de Redis custa ~zero | breaker em `holds.go` (short-circuit + sonda half-open única) |
+| Degradation visível sem spam | logs só nas transições do breaker (`degraded`/`recovered`) |
+
+### Testes
+- `internal/payment/processor_test.go` — `TestHandleNonOwnerRejected` (sem charge/row/outbox), `TestHandleMissingUserRejected`; testes existentes atualizados ao contrato novo do comando.
+- `internal/e2e/saga_test.go` — `TestSagaPaymentByNonOwnerRejected` (impostor sem efeito colateral; dono confirma em seguida).
+- `internal/holds/holds_test.go` — 5 testes novos: short-circuit sem spam (`TestStoreBreakerShortCircuitsAfterConsecutiveFailures`), rearme da sonda (`TestStoreBreakerProbeFailureRearmsCooldown`), recovery (`TestStoreBreakerRecoversOnSuccessfulProbe`), concorrência 16 goroutines sob `-race` (`TestStoreBreakerUnderConcurrency`), store desabilitado (`TestStoreDisabledIgnoresBreakerOptions`).
 
 ---
 
