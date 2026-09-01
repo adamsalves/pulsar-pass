@@ -19,6 +19,10 @@ Em inglês, Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:
 
 A ordem é sempre: PR aberto → CI verde → **revisão humana**. Agentes devem aguardar a revisão e **nunca fazer merge sem pedido explícito do usuário** — a não ser que o usuário peça, o papel do agente é reportar o estado do CI e sinalizar que o PR aguarda revisão.
 
+## Follow-ups (obrigatório)
+
+Ao se deparar com follow-ups — achados de review, dívidas técnicas, melhorias identificadas durante um ciclo —, registrar cada um como **issue no GitHub** para virar backlog; nunca deixar o item apenas em comentário de PR ou conversa. No corpo da issue: contexto, risco/pontos de atenção e sugestão de implementação, referenciando o PR ou ciclo de origem e, quando couber, o ciclo do roadmap em que encaixa.
+
 ## Qualidade
 
 - `make fmt vet lint test` antes de considerar trabalho pronto (testes de integração usam testcontainers/Docker).
