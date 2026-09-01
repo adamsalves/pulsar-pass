@@ -70,8 +70,14 @@ func boot(t *testing.T) *harness {
 // forcing expires_at backwards (which would desync the payment
 // projection from the core, a divergence that cannot occur in
 // production because both sides derive from the same ticket.reserved).
+//
+// Setting SKIP_E2E=1 skips the suite: a fast local loop without Docker
+// still exercises everything else through make test.
 func bootTTL(t *testing.T, ttl time.Duration) *harness {
 	t.Helper()
+	if os.Getenv("SKIP_E2E") != "" {
+		t.Skip("SKIP_E2E is set")
+	}
 	log := logger.New("test")
 	ctx, cancel := context.WithCancel(context.Background())
 
