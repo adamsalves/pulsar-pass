@@ -23,11 +23,14 @@ type ReservationService struct {
 	clock        Clock
 	ttl          time.Duration
 	source       string
+	holds        HoldStore
 }
 
 // NewReservationService wires the reservation use cases. tx is optional:
 // when nil each port call runs on its own (tests, tools); when set, the
-// whole use case commits as a single unit of work.
+// whole use case commits as a single unit of work. holds is the optional
+// Redis accelerator (nil disables it): hold writes happen after the
+// transaction commits and must never affect the flow outcome.
 func NewReservationService(
 	reservations ReservationRepository,
 	inventory InventoryRepository,
@@ -35,6 +38,7 @@ func NewReservationService(
 	tx TxRunner,
 	clock Clock,
 	ttl time.Duration,
+	holds HoldStore,
 ) *ReservationService {
 	return &ReservationService{
 		reservations: reservations,
@@ -44,6 +48,7 @@ func NewReservationService(
 		clock:        clock,
 		ttl:          ttl,
 		source:       "pulsar-core",
+		holds:        holds,
 	}
 }
 
@@ -59,13 +64,17 @@ type ReserveCommand struct {
 
 // Reserve consumes capacity, creates the pending reservation and
 // enqueues ticket.reserved. Repository adapters guarantee that capacity,
-// reservation and outbox rows commit in a single transaction.
+// reservation and outbox rows commit in a single transaction. After the
+// commit, the Redis fast-path hold is recorded (accelerator only).
 func (s *ReservationService) Reserve(ctx context.Context, cmd ReserveCommand) (*domain.Reservation, error) {
 	res, err := s.inTx(ctx, func(txctx context.Context) (*domain.Reservation, error) {
 		return s.reserve(txctx, cmd)
 	})
 	if err != nil {
 		return nil, err
+	}
+	if s.holds != nil {
+		_ = s.holds.Set(ctx, res.ID, res.ExpiresAt.Sub(s.clock.Now()))
 	}
 	return res, nil
 }
@@ -78,6 +87,7 @@ func (s *ReservationService) Confirm(ctx context.Context, reservationID string) 
 	if err != nil {
 		return nil, err
 	}
+	s.releaseHold(ctx, res)
 	return res, nil
 }
 
@@ -103,6 +113,15 @@ const (
 	reasonFailed    releaseReason = "payment_failed"
 	reasonCancelled releaseReason = "cancelled"
 )
+
+// release drops the Redis hold once the transaction committed; the
+// accelerator cleanup never blocks or fails the compensation itself.
+func (s *ReservationService) releaseHold(ctx context.Context, res *domain.Reservation) {
+	if s.holds == nil || res == nil {
+		return
+	}
+	_ = s.holds.Release(ctx, res.ID)
+}
 
 func (s *ReservationService) reserve(ctx context.Context, cmd ReserveCommand) (*domain.Reservation, error) {
 	if cmd.EventID == "" || cmd.UserID == "" || cmd.Quantity <= 0 {
@@ -207,6 +226,7 @@ func (s *ReservationService) release(ctx context.Context, reservationID string, 
 	if err != nil {
 		return nil, err
 	}
+	s.releaseHold(ctx, res)
 	return res, nil
 }
 

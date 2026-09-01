@@ -11,6 +11,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/internal/broker"
 	"github.com/adamsalves/pulsar-pass/internal/chrono"
 	chronoadapter "github.com/adamsalves/pulsar-pass/internal/chrono/adapter/postgres"
+	"github.com/adamsalves/pulsar-pass/internal/holds"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
@@ -43,7 +44,9 @@ func run() error {
 	}
 
 	source := chronoadapter.NewSource(pool)
-	sweeper := chrono.NewSweeper(source, bus, log, cfg.SweepInterval, cfg.SweepBatch)
+	holdStore := holds.New(cfg.RedisAddr, log)
+	defer func() { _ = holdStore.Close() }()
+	sweeper := chrono.NewSweeper(source, bus, holdStore, log, cfg.SweepInterval, cfg.SweepBatch)
 	go sweeper.Run(ctx)
 
 	healthServer := health.NewServer(cfg.HealthAddr, log)

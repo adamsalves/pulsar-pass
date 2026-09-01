@@ -12,6 +12,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/internal/core"
 	pgadapter "github.com/adamsalves/pulsar-pass/internal/core/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/internal/core/application"
+	"github.com/adamsalves/pulsar-pass/internal/holds"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
@@ -39,6 +40,9 @@ func run() error {
 	}
 	defer pool.Close()
 
+	holdStore := holds.New(cfg.RedisAddr, log)
+	defer func() { _ = holdStore.Close() }()
+
 	service := application.NewReservationService(
 		pgadapter.NewReservations(pool),
 		pgadapter.NewInventory(pool),
@@ -46,6 +50,7 @@ func run() error {
 		pgtx.NewManager(pool),
 		application.SystemClock{},
 		cfg.ReservationTTL,
+		holdStore,
 	)
 
 	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
@@ -71,6 +76,7 @@ func run() error {
 		"env", cfg.Env,
 		"health_addr", cfg.HealthAddr,
 		"reservation_ttl", cfg.ReservationTTL.String(),
+		"redis_addr", cfg.RedisAddr,
 	)
 
 	select {
