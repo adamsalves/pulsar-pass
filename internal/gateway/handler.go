@@ -46,6 +46,13 @@ func (h *ReservationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Idempotency-Key header is required")
 		return
 	}
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		// Identity must be explicit: a shared "guest" identity would let
+		// anonymous callers pay one another's reservations.
+		writeError(w, http.StatusBadRequest, "X-User-Id header is required")
+		return
+	}
 	var req createReservationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -62,10 +69,6 @@ func (h *ReservationHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reservationID := uid.New()
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" {
-		userID = "guest"
-	}
 	body, err := json.Marshal(map[string]any{
 		"reservation_id": reservationID,
 		"event_id":       req.EventID,
@@ -113,6 +116,13 @@ func (h *ReservationHandler) ConfirmPayment(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "Idempotency-Key header is required")
 		return
 	}
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		// Same contract as Create: the payer identity must be explicit,
+		// and the identity check wins over body validation.
+		writeError(w, http.StatusBadRequest, "X-User-Id header is required")
+		return
+	}
 	var req confirmPaymentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -128,10 +138,6 @@ func (h *ReservationHandler) ConfirmPayment(w http.ResponseWriter, r *http.Reque
 	}
 
 	reservationID := r.PathValue("id")
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" {
-		userID = "guest"
-	}
 	body, err := json.Marshal(map[string]any{
 		"reservation_id":       reservationID,
 		"user_id":              userID,
