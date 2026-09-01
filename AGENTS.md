@@ -15,6 +15,10 @@ O documento é o retrato *state of the art* do projeto — a seção mais recent
 
 Em inglês, Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`); branches `feat/<scope>`, `fix/<scope>`, `chore/<scope>`, `docs/<scope>`; commits atômicos (um commit lógico, testes junto com o código que cobrem). Descrições de PR em português e detalhadas.
 
+## Fluxo de PR (obrigatório)
+
+A ordem é sempre: PR aberto → CI verde → **revisão humana**. Agentes devem aguardar a revisão e **nunca fazer merge sem pedido explícito do usuário** — a não ser que o usuário peça, o papel do agente é reportar o estado do CI e sinalizar que o PR aguarda revisão.
+
 ## Qualidade
 
 - `make fmt vet lint test` antes de considerar trabalho pronto (testes de integração usam testcontainers/Docker).
