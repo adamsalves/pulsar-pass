@@ -264,9 +264,11 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 // createReservation drives POST /v1/reservations and returns the
-// reservation id the gateway handed back.
-func (h *harness) createReservation(t *testing.T, eventID string, quantity int) string {
+// reservation id the gateway handed back together with the owner
+// identity that must pay for it.
+func (h *harness) createReservation(t *testing.T, eventID string, quantity int) (reservationID, userID string) {
 	t.Helper()
+	userID = "user-" + uid.New()
 	body, err := json.Marshal(map[string]any{"event_id": eventID, "quantity": quantity})
 	if err != nil {
 		t.Fatalf("marshal create body: %v", err)
@@ -277,7 +279,7 @@ func (h *harness) createReservation(t *testing.T, eventID string, quantity int) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uid.New())
-	req.Header.Set("X-User-Id", "user-"+uid.New())
+	req.Header.Set("X-User-Id", userID)
 
 	resp, err := h.api.Client().Do(req)
 	if err != nil {
@@ -297,11 +299,13 @@ func (h *harness) createReservation(t *testing.T, eventID string, quantity int) 
 	if out.Status != "accepted" || out.ReservationID == "" {
 		t.Fatalf("unexpected create response %+v", out)
 	}
-	return out.ReservationID
+	return out.ReservationID, userID
 }
 
-// payReservation drives POST /v1/reservations/{id}/payment.
-func (h *harness) payReservation(t *testing.T, reservationID, token string) {
+// payReservation drives POST /v1/reservations/{id}/payment as the
+// given user, who is expected to be the reservation owner unless the
+// test is exercising an impostor attempt.
+func (h *harness) payReservation(t *testing.T, userID, reservationID, token string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"payment_method_token": token})
 	if err != nil {
@@ -313,7 +317,7 @@ func (h *harness) payReservation(t *testing.T, reservationID, token string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uid.New())
-	req.Header.Set("X-User-Id", "user-"+uid.New())
+	req.Header.Set("X-User-Id", userID)
 
 	resp, err := h.api.Client().Do(req)
 	if err != nil {
@@ -368,6 +372,18 @@ func (h *harness) paymentStatus(t *testing.T, reservationID string) string {
 		return ""
 	}
 	return status
+}
+
+// paymentCount counts payment attempts recorded for a reservation.
+func (h *harness) paymentCount(t *testing.T, reservationID string) int {
+	t.Helper()
+	var n int
+	err := h.payPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM payments WHERE reservation_id = $1`, reservationID).Scan(&n)
+	if err != nil {
+		t.Fatalf("count payments: %v", err)
+	}
+	return n
 }
 
 func (h *harness) contextAmount(t *testing.T, reservationID string) (int64, bool) {

@@ -130,6 +130,7 @@ func TestHandleApproved(t *testing.T) {
 
 	err := svc.Handle(context.Background(), payment.PaymentRequested{
 		ReservationID: "res-1",
+		UserID:        "user-1",
 		Token:         "tok-1",
 	}, "idem-1")
 	if err != nil {
@@ -163,7 +164,7 @@ func TestHandleDeclined(t *testing.T) {
 	acquirer := &fakeAcquirer{err: errors.New("card declined")}
 	svc := payment.NewProcessor(newFakePayments(), newFakeContexts(testContext("res-1", now.Add(5*time.Minute))), outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
 
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("Handle() error = %v (decline is a business outcome)", err)
 	}
 	if len(outbox.records) != 1 || outbox.records[0].EventType != envelope.TypePaymentFailed {
@@ -179,7 +180,7 @@ func TestHandleContextMissingIsRetryable(t *testing.T) {
 	acquirer := &fakeAcquirer{}
 	svc := payment.NewProcessor(newFakePayments(), newFakeContexts(), &fakeOutbox{}, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
 
-	err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-404", Token: "tok"}, "idem-1")
+	err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-1")
 	if !errors.Is(err, payment.ErrContextNotFound) {
 		t.Fatalf("error = %v, want ErrContextNotFound", err)
 	}
@@ -194,7 +195,7 @@ func TestHandleAfterWindowElapsed(t *testing.T) {
 	acquirer := &fakeAcquirer{}
 	svc := payment.NewProcessor(newFakePayments(), newFakeContexts(testContext("res-1", now.Add(-time.Minute))), outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
 
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if acquirer.calls != 0 {
@@ -216,14 +217,14 @@ func TestHandleRedeliveryResumesPendingCharge(t *testing.T) {
 	// First attempt: charge approved, status committed, then the process
 	// "crashes" before the outcome is delivered. Simulate by handling
 	// once and wiping the outbox.
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("first Handle() error = %v", err)
 	}
 	outbox.records = nil
 
 	// Redelivery with the same idempotency key must NOT create a second
 	// payment nor charge again.
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("redelivered Handle() error = %v", err)
 	}
 	if len(payments.store) != 1 {
@@ -243,12 +244,12 @@ func TestHandleRedeliveryOfFailedPaymentRepublishesOutcome(t *testing.T) {
 	acquirer := &fakeAcquirer{err: errors.New("card declined")}
 	svc := payment.NewProcessor(newFakePayments(), newFakeContexts(testContext("res-1", now.Add(5*time.Minute))), outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
 
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("first Handle() error = %v", err)
 	}
 	outbox.records = nil
 
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("redelivered Handle() error = %v", err)
 	}
 	if acquirer.calls != 1 {
@@ -267,10 +268,47 @@ func TestFinishWritesStatusAndOutboxInTheSameTransaction(t *testing.T) {
 	tx := &fakeTx{}
 	svc := payment.NewProcessor(payments, newFakeContexts(testContext("res-1", now.Add(5*time.Minute))), outbox, tx, acquirer, &fakeClock{now: now}, slog.Default())
 
-	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err != nil {
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if tx.opens != 1 {
 		t.Fatalf("transaction opens = %d, want 1 (status + outbox atomic)", tx.opens)
+	}
+}
+
+func TestHandleNonOwnerRejected(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	outbox := &fakeOutbox{}
+	acquirer := &fakeAcquirer{ref: "sim-123"}
+	payments := newFakePayments()
+	svc := payment.NewProcessor(payments, newFakeContexts(testContext("res-1", now.Add(5*time.Minute))), outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
+
+	err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-2", Token: "tok"}, "idem-1")
+	if !errors.Is(err, payment.ErrNotOwner) {
+		t.Fatalf("error = %v, want ErrNotOwner", err)
+	}
+	if acquirer.calls != 0 {
+		t.Errorf("acquirer called %d times, want 0 (impostor must not reach the gateway)", acquirer.calls)
+	}
+	if len(payments.store) != 0 {
+		t.Errorf("payments persisted = %d, want 0 (rejection is side-effect free)", len(payments.store))
+	}
+	if len(outbox.records) != 0 {
+		t.Errorf("outbox records = %d, want 0 (no payment.failed: the reservation must stay payable by the owner)", len(outbox.records))
+	}
+}
+
+func TestHandleMissingUserRejected(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	acquirer := &fakeAcquirer{}
+	svc := payment.NewProcessor(newFakePayments(), newFakeContexts(testContext("res-1", now.Add(5*time.Minute))), &fakeOutbox{}, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
+
+	// An anonymous command must not default to the reservation owner:
+	// defaulting would silently charge whoever the projection names.
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err == nil {
+		t.Fatal("Handle() error = nil, want rejection for missing user_id")
+	}
+	if acquirer.calls != 0 {
+		t.Errorf("acquirer called %d times, want 0", acquirer.calls)
 	}
 }
