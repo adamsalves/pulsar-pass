@@ -169,16 +169,16 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** validar a saga completa (gateway → core → payment → core) contra infraestrutura real — sucesso, recusa e expiração — e implementar o acelerador Redis (`hold:{reservation_id}`) com degradação graciosa, mantendo o PostgreSQL como autoridade.
 
-**Commits:** `f849b59` → `5b7165a`
+**Commits:** `f849b59` → `e0fc9b0`
 
 ### Entregas
 
 **Acelerador Redis (`internal/holds/`)**
-- `internal/holds/holds.go` — `Store` com `Set`/`Release`/`Exists`: grava `hold:{id}` com o TTL restante, remove no estado terminal. Degradação graciosa por construção: erro do Redis vira log de warning e o fluxo segue (`degraded`); `REDIS_ADDR` vazio desliga o acelerador; timeouts curtos (`DialTimeout 500ms`, `MaxRetries 1`) impedem que um Redis lento estoure o hot path. Testes cobrem ciclo de vida, TTL não positivo, store desabilitado e Redis inalcançável (`holds_test.go`).
+- `internal/holds/holds.go` — `Store` com `Set`/`Release`/`Exists`: grava `hold:{id}` com o TTL restante, remove no estado terminal. Degradação graciosa por construção: erro do Redis vira log de warning e o fluxo segue (`degraded`); **cada operação é limitada a 200ms** (`opTimeout`) — um Redis fora custa no máximo isso por chamada no hot path; `REDIS_ADDR=` (vazio) desliga o acelerador de verdade via `config.StringAllowEmpty` (distingue unset de vazio — o fallback de `config.String` tornava o kill switch inalcançável); `REDIS_ADDR` inalcançável degrada com warnings. Testes cobrem ciclo de vida, TTL não positivo, store desabilitado e Redis inalcançável dentro do cap (`holds_test.go`).
 - `internal/core/application/ports.go` — porta `HoldStore` (`Set`/`Release`), documentada como acelerador opcional; PostgreSQL permanece autoridade.
 - `internal/core/application/service.go` — `NewReservationService` recebe o hold store opcional (nil desliga). `Reserve` grava o hold **após o commit** (`Reserve`), `Confirm`/`Fail`/`Expire`/`Cancel` removem via `releaseHold` — cleanup nunca bloqueia nem falha a compensação.
-- `internal/chrono/sweeper.go` — porta `HoldCleaner`; o sweep faz `DEL hold:{id}` após publicar `reservation.expired` (higiene do diagrama §5.2; a chave expira sozinha de qualquer forma).
-- Wiring: `cmd/pulsar-core/main.go` e `cmd/pulsar-chrono/main.go` instanciam o store; `internal/chrono/config.go` ganha `REDIS_ADDR`.
+- `internal/chrono/sweeper.go` — porta `HoldCleaner`; o sweep publica **todos** os eventos `reservation.expired` do lote e só então faz `DEL hold:{id}` (higiene do diagrama §5.2; a chave expira sozinha de qualquer forma) — Redis lento pode atrasar a limpeza da chave, nunca a liberação dos assentos.
+- Wiring: `cmd/pulsar-core/main.go` e `cmd/pulsar-chrono/main.go` instanciam o store; `internal/chrono/config.go` ganha `REDIS_ADDR`; `pkg/config` ganha `StringAllowEmpty` (testado em `config_test.go`).
 
 **Consumidores extraídos para reuso (refactor)**
 - `internal/core/subscribers.go` — `Subscribers.Register`: os 4 consumidores do core (`core-reserve`, `core-payment-succeeded`, `core-payment-failed`, `core-reservation-expired`) saem do `main.go`; decode + use case + log agora são código de biblioteca.
@@ -195,8 +195,9 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 ### Garantias implementadas
 | Garantia | Onde vive |
 |---|---|
-| Hold é acelerador, nunca fonte da verdade | `internal/holds/holds.go` (degradação embutida) + porta `HoldStore` opcional |
+| Hold é acelerador, nunca fonte da verdade | `internal/holds/holds.go` (degradação embutida, 200ms/op) + porta `HoldStore` opcional |
 | Hold fora da transação | `Reserve`/`releaseHold` em `service.go` chamam após o commit do `inTx` |
+| Redis nunca atrasa compensação | `sweep` publica os eventos antes da higiene dos holds (`sweeper.go`) |
 | Sem assento vazado mesmo com Redis morto | sweeper do Postgres (Ciclo 1) segue como rede de segurança; Redis só acelera |
 | Saga e2e executada de verdade | `internal/e2e/` com os mesmos consumidores dos binários |
 
