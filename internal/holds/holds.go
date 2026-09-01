@@ -22,6 +22,14 @@ import (
 // KeyPrefix namespaces hold keys on the shared Redis instance.
 const KeyPrefix = "hold:"
 
+// Operation names reported to Observer implementations. They double as
+// stable instrument names for the observability exposition.
+const (
+	OpSet     = "set"
+	OpRelease = "release"
+	OpExists  = "exists"
+)
+
 // opTimeout caps every Redis round trip. The hold is an accelerator:
 // a slow or unavailable Redis must cost at most this much per
 // operation, never the flow itself.
@@ -113,15 +121,15 @@ func (s *Store) Set(ctx context.Context, reservationID string, ttl time.Duration
 	}
 	start := time.Now()
 	if !s.br.allow() {
-		s.observe("set", start, OpShortCircuited)
+		s.observe(OpSet, start, OpShortCircuited)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	err := s.client.Set(ctx, Key(reservationID), "1", ttl).Err()
-	s.observe("set", start, outcomeOf(err))
+	s.observe(OpSet, start, outcomeOf(err))
 	if err != nil {
-		s.degraded("set", reservationID, err)
+		s.degraded(OpSet, reservationID, err)
 		return nil
 	}
 	s.recovered()
@@ -136,15 +144,15 @@ func (s *Store) Release(ctx context.Context, reservationID string) error {
 	}
 	start := time.Now()
 	if !s.br.allow() {
-		s.observe("release", start, OpShortCircuited)
+		s.observe(OpRelease, start, OpShortCircuited)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	err := s.client.Del(ctx, Key(reservationID)).Err()
-	s.observe("release", start, outcomeOf(err))
+	s.observe(OpRelease, start, outcomeOf(err))
 	if err != nil {
-		s.degraded("release", reservationID, err)
+		s.degraded(OpRelease, reservationID, err)
 		return nil
 	}
 	s.recovered()
@@ -159,15 +167,15 @@ func (s *Store) Exists(ctx context.Context, reservationID string) bool {
 	}
 	start := time.Now()
 	if !s.br.allow() {
-		s.observe("exists", start, OpShortCircuited)
+		s.observe(OpExists, start, OpShortCircuited)
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	n, err := s.client.Exists(ctx, Key(reservationID)).Result()
-	s.observe("exists", start, outcomeOf(err))
+	s.observe(OpExists, start, outcomeOf(err))
 	if err != nil {
-		s.degraded("exists", reservationID, err)
+		s.degraded(OpExists, reservationID, err)
 		return false
 	}
 	s.recovered()

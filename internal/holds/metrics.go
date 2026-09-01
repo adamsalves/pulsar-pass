@@ -89,15 +89,14 @@ func (o *SnapshotObserver) ObserveOp(op string, latency time.Duration, outcome O
 	c := o.snap.Ops[op]
 	c.Attempts++
 	switch outcome {
-	case OpSuccess:
-		c.Succeeded++
-		o.snap.LatencyCount++
-		o.snap.LatencySum += latency
-		if latency > o.snap.LatencyMax {
-			o.snap.LatencyMax = latency
+	case OpSuccess, OpDegraded:
+		if outcome == OpSuccess {
+			c.Succeeded++
+		} else {
+			c.Degraded++
 		}
-	case OpDegraded:
-		c.Degraded++
+		// Only attempts that reached Redis count latency; short-circuits
+		// pay no round trip.
 		o.snap.LatencyCount++
 		o.snap.LatencySum += latency
 		if latency > o.snap.LatencyMax {
@@ -105,6 +104,10 @@ func (o *SnapshotObserver) ObserveOp(op string, latency time.Duration, outcome O
 		}
 	case OpShortCircuited:
 		c.ShortCircuited++
+	default:
+		// SnapshotObserver is a test/introspection helper: an unknown
+		// outcome is a programming error and must fail loudly.
+		panic("holds: unknown op outcome")
 	}
 	o.snap.Ops[op] = c
 }

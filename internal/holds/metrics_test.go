@@ -34,7 +34,7 @@ func TestSnapshotObserverCountsDegradedAndShortCircuits(t *testing.T) {
 	}
 
 	stats := obs.Stats()
-	set := stats.Ops["set"]
+	set := stats.Ops[holds.OpSet]
 	if set.Attempts != 5 {
 		t.Errorf("set attempts = %d, want 5", set.Attempts)
 	}
@@ -47,11 +47,11 @@ func TestSnapshotObserverCountsDegradedAndShortCircuits(t *testing.T) {
 	if set.Succeeded != 0 {
 		t.Errorf("set succeeded = %d, want 0", set.Succeeded)
 	}
-	release := stats.Ops["release"]
+	release := stats.Ops[holds.OpRelease]
 	if release.Attempts != 1 || release.ShortCircuited != 1 {
 		t.Errorf("release counters = %+v, want 1 attempt, short-circuited", release)
 	}
-	exists := stats.Ops["exists"]
+	exists := stats.Ops[holds.OpExists]
 	if exists.Attempts != 1 || exists.ShortCircuited != 1 {
 		t.Errorf("exists counters = %+v, want 1 attempt, short-circuited", exists)
 	}
@@ -99,11 +99,11 @@ func TestSnapshotObserverRecordsSuccessAndRecovery(t *testing.T) {
 	}
 
 	stats := obs.Stats()
-	set := stats.Ops["set"]
+	set := stats.Ops[holds.OpSet]
 	if set.Degraded != 1 || set.Succeeded != 1 {
 		t.Errorf("set counters = %+v, want 1 degraded + 1 succeeded", set)
 	}
-	exists := stats.Ops["exists"]
+	exists := stats.Ops[holds.OpExists]
 	if exists.Succeeded != 1 {
 		t.Errorf("exists counters = %+v, want 1 succeeded", exists)
 	}
@@ -125,7 +125,7 @@ func TestStatsReturnsACopy(t *testing.T) {
 	obs.ObserveOp("set", time.Millisecond, holds.OpSuccess)
 
 	stats := obs.Stats()
-	stats.Ops["set"] = holds.OpCounters{}
+	stats.Ops[holds.OpSet] = holds.OpCounters{}
 	stats.BreakerOpen = true
 
 	fresh := obs.Stats()
