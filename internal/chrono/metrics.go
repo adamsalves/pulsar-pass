@@ -48,7 +48,7 @@ func (m *sweepMetrics) instruments() (batches, expired api.Int64Counter, pending
 // blueprint. Sources without it simply skip the gauge.
 type PendingAgeSource interface {
 	// MaxPendingAge reports the age of the oldest PENDING reservation;
-	// false when none is pending.
+	// zero when none is pending, false only on lookup error.
 	MaxPendingAge(ctx context.Context) (time.Duration, bool)
 }
 
@@ -69,8 +69,11 @@ func recordSweepOutcome(sweepErr error, expired int) {
 	}
 }
 
-// recordPendingAge reports the age of the oldest PENDING reservation;
-// the gauge is omitted when nothing is pending (no stale backlog).
+// recordPendingAge reports the age of the oldest PENDING reservation.
+// The Prometheus exporter is a last-value store, so the gauge must be
+// re-recorded on every tick — including 0 when nothing is pending — or
+// it would freeze at the previous maximum and false-positive the
+// backlog alert. Lookup errors skip the tick and keep the last value.
 func recordPendingAge(ctx context.Context, source ReservationSource) {
 	if _, _, gauge, err := swMetrics.instruments(); err != nil || gauge == nil {
 		return

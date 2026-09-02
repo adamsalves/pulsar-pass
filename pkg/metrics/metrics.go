@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	otelprometheus "go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
@@ -66,6 +67,10 @@ func Init(ctx context.Context, service string) (http.Handler, func(context.Conte
 	otel.SetMeterProvider(provider)
 
 	if err := runtime.Start(runtime.WithMinimumReadMemStatsInterval(0)); err != nil {
+		// Roll the partial init back: without this, the global provider
+		// would stay installed but untracked by Shutdown.
+		_ = provider.Shutdown(context.Background())
+		otel.SetMeterProvider(noop.NewMeterProvider())
 		return nil, nil, fmt.Errorf("start runtime instrumentation: %w", err)
 	}
 

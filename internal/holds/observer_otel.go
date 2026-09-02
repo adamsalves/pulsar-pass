@@ -2,7 +2,6 @@ package holds
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -16,8 +15,6 @@ import (
 // It binds to the global meter provider on construction, so build it
 // after metrics.Init.
 type OTelObserver struct {
-	stateOpen atomic.Bool
-
 	ops        api.Int64Counter
 	latency    api.Float64Histogram
 	opened     api.Int64Counter
@@ -77,14 +74,12 @@ func (o *OTelObserver) ObserveOp(op string, latency time.Duration, outcome OpOut
 
 // BreakerOpened implements Observer.
 func (o *OTelObserver) BreakerOpened() {
-	o.stateOpen.Store(true)
 	o.opened.Add(context.Background(), 1)
 	o.stateGauge.Record(context.Background(), 1)
 }
 
 // BreakerRecovered implements Observer.
 func (o *OTelObserver) BreakerRecovered() {
-	o.stateOpen.Store(false)
 	o.recovered.Add(context.Background(), 1)
 	o.stateGauge.Record(context.Background(), 0)
 }

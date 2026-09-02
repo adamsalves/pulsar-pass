@@ -45,7 +45,9 @@ func recordChargeOutcome(approved bool, reason string) {
 		switch {
 		case strings.Contains(reason, "window elapsed"):
 			outcome = "window_elapsed"
-		case reason == "card declined":
+		case strings.Contains(reason, "card declined"):
+			// The simulator declines with "card declined (forced by
+			// token)"; real acquirers reuse the prefix.
 			outcome = "declined"
 		default:
 			outcome = "acquirer_error"

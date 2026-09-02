@@ -90,7 +90,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 }
 
 // sweep publishes one batch of compensation events and returns how
-// many reservations expired in this pass.
+// many reservations expired in this pass; on a mid-batch publish
+// failure the count of events already published is preserved so the
+// expired counter does not undercount.
 func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 	if s.finder == nil || s.bus == nil {
 		return 0, nil
@@ -100,6 +102,7 @@ func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	now := time.Now().UTC()
+	published := 0
 	for _, e := range expired {
 		payload, err := json.Marshal(ReservationExpiredPayload{
 			ReservationID: e.ReservationID,
@@ -122,8 +125,9 @@ func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 			},
 		}
 		if err := s.bus.Publish(ctx, msg); err != nil {
-			return 0, err
+			return published, err
 		}
+		published++
 		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
 	}
 	// Hold hygiene runs only after every compensation event of the
@@ -134,5 +138,5 @@ func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 			_ = s.holds.Release(ctx, e.ReservationID)
 		}
 	}
-	return len(expired), nil
+	return published, nil
 }
