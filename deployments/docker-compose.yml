@@ -49,5 +49,28 @@ services:
       - "16686:16686" # UI
       - "4317:4317" # OTLP gRPC - `make run-*` services live on the host
 
+  prometheus:
+    image: prom/prometheus:v3.9.1
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # The pulsar-* services run on the host (make run-*); this maps
+      # host.docker.internal so the scrape targets resolve on Linux.
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
 volumes:
   pgdata:

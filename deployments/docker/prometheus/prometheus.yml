@@ -1,0 +1,26 @@
+# Prometheus scrape configuration for the local PulsarPass topology.
+# The pulsar-* services run on the host via `make run-*`, so targets go
+# through host.docker.internal (mapped to the host gateway on Linux by
+# the compose service definition).
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: pulsar-gateway
+    static_configs:
+      - targets: ["host.docker.internal:9091"]
+  - job_name: pulsar-core
+    static_configs:
+      - targets: ["host.docker.internal:9092"]
+  - job_name: pulsar-chrono
+    static_configs:
+      - targets: ["host.docker.internal:9093"]
+  - job_name: pulsar-payment
+    static_configs:
+      - targets: ["host.docker.internal:9094"]
+  - job_name: pulsar-horizon
+    static_configs:
+      - targets: ["host.docker.internal:9095"]
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

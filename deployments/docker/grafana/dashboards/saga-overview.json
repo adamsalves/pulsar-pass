@@ -1,0 +1,163 @@
+{
+  "title": "PulsarPass — Saga overview",
+  "uid": "pulsarpass-saga",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Gateway — requests/s por rota e status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_gateway_http_requests_total[1m])) by (http_route, http_status_code)",
+          "legendFormat": "{{http_route}} {{http_status_code}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Gateway — latência p50 / p99",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(pulsar_gateway_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(pulsar_gateway_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Core — reservas/s por op e outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_core_reservations_total[1m])) by (op, outcome)",
+          "legendFormat": "{{op}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Core — rejeições por esgotamento (sold out)/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "description": "Sinal do blueprint para o alarme de esgotamento no pico.",
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_core_reservations_total{outcome=\"sold_out\"}[1m]))",
+          "legendFormat": "sold_out"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Payment — charges/s por outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_payment_charges_total[1m])) by (outcome)",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Horizon — backlog das outboxes (linhas não processadas)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "description": "Lag do relay por banco (core e payment). Crescimento sustentado indica relay parado ou broker indisponível.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "pulsar_horizon_outbox_backlog",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Chrono — idade da reserva PENDING mais antiga",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "description": "Zero significa nenhum PENDING no momento.",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "pulsar_chrono_pending_max_age_seconds", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Holds — operações/s por outcome (acelerador Redis)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "description": "degraded = Redis falhou; short_circuited = breaker aberto. Alimentam o alarme de acelerador degradado.",
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_holds_ops_total[1m])) by (job, op, outcome)",
+          "legendFormat": "{{job}} {{op}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Holds — estado do circuit breaker",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "description": "1 = breaker aberto (fast path short-circuited); 0 = fechado.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": 1, "options": { "0": { "text": "closed", "color": "green" }, "1": { "text": "open", "color": "red" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "pulsar_holds_breaker_open", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Eventbus — advisories de DLQ/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "description": "Mensagens que esgotaram max deliveries. Qualquer valor acima de zero merece investigação.",
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(pulsar_eventbus_dlq_advisories_total[5m])) by (stream, consumer)",
+          "legendFormat": "{{stream}} {{consumer}}"
+        }
+      ]
+    }
+  ]
+}
