@@ -192,6 +192,7 @@ func (p *Processor) finish(ctx context.Context, pay *Payment, gatewayRef, reason
 		status = PaymentStatusSucceeded
 		eventType = envelope.TypePaymentSucceeded
 	}
+	recordChargeOutcome(approved, reason)
 	rec, err := p.record(eventType, pay, gatewayRef, reason)
 	if err != nil {
 		return err

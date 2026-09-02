@@ -66,6 +66,7 @@ func (s *Subscribers) onReserve(ctx context.Context, msg eventbus.Message) error
 		UserID:        cmd.UserID,
 		Quantity:      cmd.Quantity,
 	})
+	recordReserveOutcome(err)
 	if err != nil {
 		return fmt.Errorf("reserve: %w", err)
 	}
@@ -84,7 +85,9 @@ func (s *Subscribers) onPaymentSucceeded(ctx context.Context, msg eventbus.Messa
 	if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 		return fmt.Errorf("decode payment.succeeded: %w", err)
 	}
-	if _, err := s.service.Confirm(ctx, ev.ReservationID); err != nil {
+	_, err := s.service.Confirm(ctx, ev.ReservationID)
+	recordTerminalOutcome("confirm", err)
+	if err != nil {
 		return fmt.Errorf("confirm reservation %s: %w", ev.ReservationID, err)
 	}
 	s.log.Info("reservation confirmed", "reservation_id", ev.ReservationID)
@@ -97,7 +100,9 @@ func (s *Subscribers) onPaymentFailed(ctx context.Context, msg eventbus.Message)
 	if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 		return fmt.Errorf("decode payment.failed: %w", err)
 	}
-	if _, err := s.service.Fail(ctx, ev.ReservationID); err != nil {
+	_, err := s.service.Fail(ctx, ev.ReservationID)
+	recordTerminalOutcome("fail", err)
+	if err != nil {
 		return fmt.Errorf("fail reservation %s: %w", ev.ReservationID, err)
 	}
 	s.log.Info("reservation failed; seat released", "reservation_id", ev.ReservationID)
@@ -110,7 +115,9 @@ func (s *Subscribers) onReservationExpired(ctx context.Context, msg eventbus.Mes
 	if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 		return fmt.Errorf("decode reservation.expired: %w", err)
 	}
-	if _, err := s.service.Expire(ctx, ev.ReservationID); err != nil {
+	_, err := s.service.Expire(ctx, ev.ReservationID)
+	recordTerminalOutcome("expire", err)
+	if err != nil {
 		return fmt.Errorf("expire reservation %s: %w", ev.ReservationID, err)
 	}
 	s.log.Info("reservation expired; seat released", "reservation_id", ev.ReservationID)

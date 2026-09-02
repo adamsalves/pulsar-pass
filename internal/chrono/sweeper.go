@@ -79,20 +79,25 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.sweep(ctx); err != nil {
+			recordPendingAge(ctx, s.finder)
+			expired, err := s.sweep(ctx)
+			recordSweepOutcome(err, expired)
+			if err != nil {
 				s.log.Error("sweep failed", "error", err)
 			}
 		}
 	}
 }
 
-func (s *Sweeper) sweep(ctx context.Context) error {
+// sweep publishes one batch of compensation events and returns how
+// many reservations expired in this pass.
+func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 	if s.finder == nil || s.bus == nil {
-		return nil
+		return 0, nil
 	}
 	expired, err := s.finder.FindExpired(ctx, s.batchSize)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	now := time.Now().UTC()
 	for _, e := range expired {
@@ -104,7 +109,7 @@ func (s *Sweeper) sweep(ctx context.Context) error {
 			ExpiredAt:     now,
 		})
 		if err != nil {
-			return err
+			return 0, err
 		}
 		msg := eventbus.Message{
 			// Stable id: each reservation expires exactly once (enforced
@@ -117,7 +122,7 @@ func (s *Sweeper) sweep(ctx context.Context) error {
 			},
 		}
 		if err := s.bus.Publish(ctx, msg); err != nil {
-			return err
+			return 0, err
 		}
 		s.log.Info("reservation expired", "reservation_id", e.ReservationID, "event_id", e.EventID)
 	}
@@ -129,5 +134,5 @@ func (s *Sweeper) sweep(ctx context.Context) error {
 			_ = s.holds.Release(ctx, e.ReservationID)
 		}
 	}
-	return nil
+	return len(expired), nil
 }

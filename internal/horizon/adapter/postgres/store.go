@@ -67,3 +67,12 @@ func (s *Store) MarkProcessed(ctx context.Context, ids ...string) error {
 		   AND processed_at IS NULL`, ids)
 	return err
 }
+
+// CountUnprocessed reports the outbox relay backlog. It implements the
+// optional horizon.BacklogCounter.
+func (s *Store) CountUnprocessed(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM outbox_events WHERE processed_at IS NULL`).Scan(&n)
+	return n, err
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
 
@@ -32,6 +33,12 @@ func run() error {
 	cfg := gateway.LoadConfig()
 	log := logger.New(cfg.Env)
 
+	metricsHandler, stopMetrics, err := metrics.Init(ctx, "pulsar-gateway")
+	if err != nil {
+		return fmt.Errorf("init metrics: %w", err)
+	}
+	defer func() { _ = stopMetrics(context.Background()) }()
+
 	bus, err := selectBus(ctx, cfg, log)
 	if err != nil {
 		return err
@@ -42,6 +49,7 @@ func run() error {
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
+	healthServer.Mount("/metrics", metricsHandler)
 
 	errCh := make(chan error, 2)
 	go func() {

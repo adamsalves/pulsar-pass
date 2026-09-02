@@ -27,6 +27,7 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 | ADR-5 | **Database-per-service** (bases `pulsar_core` e `pulsar_payment`) | Nenhum serviço lê as tabelas do outro. Referências entre contextos são por ID, sem FK cruzada |
 | ADR-6 | **Monorepo Go** com `cmd/` por serviço | Contratos de evento compartilhados compilados junto, CI único, refactors atômicos |
 | ADR-7 | **Stdlib-first** no Ciclo 0 | O esqueleto usa apenas a biblioteca padrão (net/http com roteamento de métodos + path params, log/slog). Dependências entram quando a integração real exigir |
+| ADR-8 | **OpenTelemetry SDK + exporter Prometheus** para observabilidade (Ciclo 3) | O §9 do blueprint nomeia OTel e Prometheus; o SDK dá uma API única para métricas (e traces no PR 2) com instrumentos no-op quando não inicializado (testes/tools pagam zero). `pkg/metrics` inicializa o provider global com exporter Prometheus próprio, exposto em `/metrics` no servidor de health; Jaeger/collector ficam para o tracing e o Ciclo 6 |
 
 ## 3. Serviços
 

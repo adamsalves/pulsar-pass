@@ -4,7 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	api "go.opentelemetry.io/otel/metric"
 
 	"github.com/adamsalves/pulsar-pass/pkg/uid"
 )
@@ -42,6 +48,72 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
+}
+
+// httpInstruments carries the lazily created OTel instruments: the
+// package initializes before the binaries run metrics.Init, so binding
+// must happen on first use, against the global provider in place at
+// that moment.
+type httpInstruments struct {
+	once      sync.Once
+	requests  api.Int64Counter
+	duration  api.Float64Histogram
+	initError error
+}
+
+var httpMetrics httpInstruments
+
+func (i *httpInstruments) get() error {
+	i.once.Do(func() {
+		meter := otel.Meter("pulsar-pass/gateway")
+		i.requests, i.initError = meter.Int64Counter(
+			"pulsar_gateway_http_requests_total",
+			api.WithDescription("HTTP requests processed by the gateway"))
+		if i.initError != nil {
+			return
+		}
+		i.duration, i.initError = meter.Float64Histogram(
+			"pulsar_gateway_http_request_duration_seconds",
+			api.WithDescription("HTTP request duration in seconds"),
+			api.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5))
+	})
+	return i.initError
+}
+
+// Metrics records request counts by route template and status plus the
+// duration histogram feeding the gateway p99. It binds to the global
+// OTel provider on first request; without metrics.Init it is a no-op.
+func Metrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if err := httpMetrics.get(); err == nil {
+			attrs := api.WithAttributes(
+				attribute.String("http.route", routeTemplate(r)),
+				attribute.String("http.method", r.Method),
+				attribute.Int("http.status_code", rec.status),
+			)
+			httpMetrics.requests.Add(r.Context(), 1, attrs)
+			httpMetrics.duration.Record(r.Context(), time.Since(start).Seconds(), attrs)
+		}
+	})
+}
+
+// routeTemplate reduces the concrete path to the route pattern so the
+// cardinality of the route label stays bounded.
+func routeTemplate(r *http.Request) string {
+	path := r.URL.Path
+	switch {
+	case strings.HasPrefix(path, "/v1/reservations/") && strings.HasSuffix(path, "/payment"):
+		return "/v1/reservations/{id}/payment"
+	case strings.HasPrefix(path, "/v1/reservations/"):
+		return "/v1/reservations/{id}"
+	case path == "/v1/reservations":
+		return "/v1/reservations"
+	default:
+		return "unmatched"
+	}
 }
 
 // Logging records method, path, status and duration of each request.
