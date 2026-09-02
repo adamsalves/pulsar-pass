@@ -55,3 +55,34 @@ func recordChargeOutcome(approved bool, reason string) {
 	}
 	counter.Add(context.Background(), 1, api.WithAttributes(attribute.String("outcome", outcome)))
 }
+
+// contextWaitMetrics counts the inline waits for the reservation
+// context projection, same lazy binding as the charge counter.
+type contextWaitMetrics struct {
+	once  sync.Once
+	waits api.Int64Counter
+	err   error
+}
+
+var waitMetrics contextWaitMetrics
+
+func (m *contextWaitMetrics) counter() (api.Int64Counter, error) {
+	m.once.Do(func() {
+		meter := otel.Meter("pulsar-pass/payment")
+		m.waits, m.err = meter.Int64Counter("pulsar_payment_context_waits_total",
+			api.WithDescription("Inline waits for the reservation context projection"))
+	})
+	return m.waits, m.err
+}
+
+// recordContextWait classifies an inline wait: resolved when the
+// projection landed during the wait, exhausted when the budget ran out
+// and the retryable error went back to the broker. Waits that never
+// started (projection already present) are not counted.
+func recordContextWait(outcome string) {
+	counter, err := waitMetrics.counter()
+	if err != nil {
+		return
+	}
+	counter.Add(context.Background(), 1, api.WithAttributes(attribute.String("outcome", outcome)))
+}

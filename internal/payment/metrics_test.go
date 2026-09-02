@@ -52,6 +52,22 @@ func TestChargeOutcomeClassification(t *testing.T) {
 		t.Fatalf("acquirer error Handle() error = %v", err)
 	}
 
+	// Inline waits: the lazily bound instruments stay tied to the
+	// provider of the first Init in the process, so the wait outcomes
+	// are pinned in the same scrape as the charge outcomes.
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	waitResolved := &flakyContexts{fakeContexts: newFakeContexts(testContext("res-4", now.Add(5*time.Minute))), misses: 1}
+	if err := payment.NewProcessor(newFakePayments(), waitResolved, &fakeOutbox{}, &fakeTx{}, &fakeAcquirer{ref: "sim"}, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(noSleep)).
+		Handle(ctx, payment.PaymentRequested{ReservationID: "res-4", UserID: "user-1", Token: "tok"}, "idem-wait-resolved"); err != nil {
+		t.Fatalf("resolved wait Handle() error = %v", err)
+	}
+	waitExhausted := &flakyContexts{fakeContexts: newFakeContexts(), misses: 99}
+	err = payment.NewProcessor(newFakePayments(), waitExhausted, &fakeOutbox{}, &fakeTx{}, &fakeAcquirer{}, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(noSleep)).
+		Handle(ctx, payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-wait-exhausted")
+	if !errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("exhausted wait Handle() error = %v, want ErrContextNotFound", err)
+	}
+
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
@@ -62,6 +78,9 @@ func TestChargeOutcomeClassification(t *testing.T) {
 		`outcome="declined"`,
 		`outcome="window_elapsed"`,
 		`outcome="acquirer_error"`,
+		"pulsar_payment_context_waits_total",
+		`outcome="resolved"`,
+		`outcome="exhausted"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q:\n%s", want, body)
