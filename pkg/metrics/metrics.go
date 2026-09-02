@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -36,6 +37,12 @@ import (
 // OTLPEndpointEnv is the standard OTLP endpoint variable: when set,
 // Init installs a tracer provider shipping spans to that collector.
 const OTLPEndpointEnv = "OTEL_EXPORTER_OTLP_ENDPOINT"
+
+// OTLPSampleRatioEnv configures the root span sampling ratio (0..1)
+// for the load-test and production profiles. Unset keeps always
+// sampling; an explicit invalid value fails fast instead of silently
+// changing the trace volume.
+const OTLPSampleRatioEnv = "OTEL_TRACE_SAMPLE_RATIO"
 
 var (
 	initMu sync.Mutex
@@ -81,7 +88,13 @@ func Init(ctx context.Context, service string) (http.Handler, func(context.Conte
 
 	tracerShutdown := func(context.Context) error { return nil }
 	if ep := os.Getenv(OTLPEndpointEnv); ep != "" {
-		ts, err := initTraces(ctx, ep, res)
+		ratio, err := samplingRatio()
+		if err != nil {
+			_ = provider.Shutdown(context.Background())
+			otel.SetMeterProvider(metricnoop.NewMeterProvider())
+			return nil, nil, err
+		}
+		ts, err := initTraces(ctx, ep, res, ratio)
 		if err != nil {
 			_ = provider.Shutdown(context.Background())
 			otel.SetMeterProvider(metricnoop.NewMeterProvider())
@@ -112,13 +125,13 @@ func Init(ctx context.Context, service string) (http.Handler, func(context.Conte
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{}), shutdown, nil
 }
 
-// initTraces installs the OTLP tracer provider. The gRPC exporter
-// connects lazily, so a collector that is not up yet only delays span
-// delivery instead of failing the process. TLS collectors are out of
-// scope for the local/compose topology of this cycle: both endpoint
-// schemes dial plaintext, and real transport security joins the
-// production wiring (Ciclo 6).
-func initTraces(ctx context.Context, endpoint string, res *resource.Resource) (func(context.Context) error, error) {
+// initTraces installs the OTLP tracer provider with the given root
+// sampling ratio. The gRPC exporter connects lazily, so a collector
+// that is not up yet only delays span delivery instead of failing the
+// process. TLS collectors are out of scope for the local/compose
+// topology of this cycle: both endpoint schemes dial plaintext, and
+// real transport security joins the production wiring (Ciclo 6).
+func initTraces(ctx context.Context, endpoint string, res *resource.Resource, ratio float64) (func(context.Context) error, error) {
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(stripEndpointScheme(endpoint)),
 		otlptracegrpc.WithInsecure(),
@@ -129,10 +142,28 @@ func initTraces(ctx context.Context, endpoint string, res *resource.Resource) (f
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))),
 	)
 	otel.SetTracerProvider(provider)
 	return provider.Shutdown, nil
+}
+
+// samplingRatio resolves the root sampling ratio: unset keeps always
+// sampling (the local profile), an explicit value must be a valid
+// ratio in [0, 1] and is enforced loudly — a typo must not silently
+// multiply the trace volume under load. The compound comparison
+// rejects NaN too: every ordered comparison against NaN is false, so
+// a plain range check would let it through.
+func samplingRatio() (float64, error) {
+	raw := os.Getenv(OTLPSampleRatioEnv)
+	if raw == "" {
+		return 1, nil
+	}
+	ratio, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !(ratio >= 0 && ratio <= 1) {
+		return 0, fmt.Errorf("invalid %s %q: expected a number between 0 and 1", OTLPSampleRatioEnv, raw)
+	}
+	return ratio, nil
 }
 
 // stripEndpointScheme tolerates the standard OTLP env format
