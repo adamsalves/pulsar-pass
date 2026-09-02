@@ -55,6 +55,20 @@ type JetStream struct {
 	wg      sync.WaitGroup
 	closeMu sync.Mutex
 	closed  bool
+	// durables records the consumers this process registered. DLQ
+	// advisories broadcast to every service, so only the owner counts
+	// (and logs) its own — otherwise the DLQ metric multiplies by the
+	// number of deployed services.
+	durables sync.Map
+}
+
+// ownConsumer marks a durable as belonging to this process.
+func (j *JetStream) ownConsumer(queue string) { j.durables.Store(queue, true) }
+
+// ownsConsumer reports whether this process registered the consumer.
+func (j *JetStream) ownsConsumer(queue string) bool {
+	_, ok := j.durables.Load(queue)
+	return ok
 }
 
 // ConnectJetStream connects to the broker, ensures every declared stream
@@ -152,6 +166,7 @@ func (j *JetStream) Subscribe(subject, queue string, handler Handler) error {
 	if err != nil {
 		return fmt.Errorf("eventbus: ensure consumer %s: %w", queue, err)
 	}
+	j.ownConsumer(queue)
 	j.wg.Add(1)
 	go j.consumeLoop(cons, queue, handler)
 	return nil
@@ -256,6 +271,10 @@ func (j *JetStream) listenDLQ(ctx context.Context) {
 			Subject  string `json:"subject"`
 		}
 		_ = json.Unmarshal(m.Data, &adv)
+		if !j.ownsConsumer(adv.Consumer) {
+			// Another service's consumer: its owner counts and logs it.
+			return
+		}
 		incDLQAdvisory(adv.Stream, adv.Consumer)
 		j.log.Error("message exceeded max deliveries (DLQ advisory)",
 			"stream", adv.Stream,
