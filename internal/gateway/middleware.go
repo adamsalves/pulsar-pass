@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/adamsalves/pulsar-pass/pkg/uid"
 )
@@ -78,6 +79,46 @@ func (i *httpInstruments) get() error {
 			api.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5))
 	})
 	return i.initError
+}
+
+// tracingInstruments carries the lazily created tracer: the package
+// initializes before the binaries run metrics.Init, so binding must
+// happen on first use, against the global provider in place at that
+// moment.
+type tracingInstruments struct {
+	once   sync.Once
+	tracer trace.Tracer
+}
+
+var gwTracer tracingInstruments
+
+func (i *tracingInstruments) get() trace.Tracer {
+	i.once.Do(func() {
+		i.tracer = otel.Tracer("pulsar-pass/gateway")
+	})
+	return i.tracer
+}
+
+// Tracing opens a server span per request with the route template and
+// the request id as attributes. Without metrics.Init (or without an
+// OTLP endpoint) the global provider is a no-op and the span is free.
+func Tracing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracer := gwTracer.get()
+		route := routeTemplate(r)
+		spanCtx, span := tracer.Start(r.Context(), "HTTP "+r.Method+" "+route,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.route", route),
+				attribute.String("http.method", r.Method),
+				attribute.String("http.request_id", RequestIDFrom(r.Context())),
+			),
+		)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(spanCtx))
+		span.SetAttributes(attribute.Int("http.status_code", rec.status))
+		span.End()
+	})
 }
 
 // Metrics records request counts by route template and status plus the

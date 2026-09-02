@@ -70,3 +70,29 @@ func TestShutdownWithoutInitIsNoop(t *testing.T) {
 		t.Fatalf("Shutdown() without Init error = %v", err)
 	}
 }
+
+// TestInitWithOTLPEndpointInstallsTracerProvider: with the OTLP env
+// set, Init installs a real tracer provider — spans get a valid trace
+// context even before any collector is reachable (the gRPC exporter
+// connects lazily).
+func TestInitWithOTLPEndpointInstallsTracerProvider(t *testing.T) {
+	t.Setenv(metrics.OTLPEndpointEnv, "127.0.0.1:14317")
+
+	handler, shutdown, err := metrics.Init(context.Background(), "test-service")
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = metrics.Shutdown(context.Background()) })
+	if handler == nil || shutdown == nil {
+		t.Fatal("Init() returned nil handler or shutdown")
+	}
+
+	_, span := otel.Tracer("test").Start(context.Background(), "probe")
+	defer span.End()
+	if !span.SpanContext().IsValid() {
+		t.Fatal("span context invalid: the global tracer provider is still a no-op")
+	}
+	if err := shutdown(context.Background()); err != nil {
+		t.Errorf("shutdown error = %v", err)
+	}
+}

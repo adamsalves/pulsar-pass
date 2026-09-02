@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Bus combines publishing, subscribing and lifecycle management.
@@ -102,8 +103,14 @@ func ConnectJetStream(ctx context.Context, cfg JetStreamConfig, log *slog.Logger
 	return j, nil
 }
 
-// Publish sends msg using its ID as the deduplication key.
+// Publish sends msg using its ID as the deduplication key. The active
+// span (if any) is stamped onto the headers as W3C trace context, so
+// the consumer's span joins the same trace.
 func (j *JetStream) Publish(ctx context.Context, msg Message) error {
+	pctx, span := publishSpan(ctx, &msg)
+	defer span.End()
+	injectTraceContext(pctx, &msg)
+
 	nm := &nats.Msg{Subject: msg.Subject, Data: msg.Payload}
 	if len(msg.Headers) > 0 {
 		nm.Header = make(nats.Header, len(msg.Headers))
@@ -111,7 +118,11 @@ func (j *JetStream) Publish(ctx context.Context, msg Message) error {
 			nm.Header.Set(k, v)
 		}
 	}
-	_, err := j.js.PublishMsg(ctx, nm, jetstream.WithMsgID(msg.ID))
+	_, err := j.js.PublishMsg(pctx, nm, jetstream.WithMsgID(msg.ID))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "publish failed")
+	}
 	return err
 }
 
@@ -181,13 +192,18 @@ func (j *JetStream) handle(msg jetstream.Msg, consumer string, handler Handler) 
 	for k := range msg.Headers() {
 		headers[k] = msg.Headers().Get(k)
 	}
-	err := handler(context.Background(), Message{
+	m := Message{
 		ID:      msg.Headers().Get("Nats-Msg-Id"),
 		Subject: msg.Subject(),
 		Payload: msg.Data(),
 		Headers: headers,
-	})
+	}
+	cctx, span := consumeSpan(context.Background(), &m)
+	err := handler(cctx, m)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "handler failed")
+		span.End()
 		j.log.Warn("handler failed; requesting redelivery",
 			"consumer", consumer,
 			"subject", msg.Subject(),
@@ -196,6 +212,7 @@ func (j *JetStream) handle(msg jetstream.Msg, consumer string, handler Handler) 
 		_ = msg.Nak()
 		return
 	}
+	span.End()
 	if err := msg.Ack(); err != nil {
 		j.log.Debug("ack failed; broker will redeliver", "consumer", consumer, "error", err)
 	}

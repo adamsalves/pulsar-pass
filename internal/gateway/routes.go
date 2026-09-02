@@ -14,5 +14,5 @@ func Routes(h *ReservationHandler, log *slog.Logger) http.Handler {
 	mux.Handle("GET /v1/reservations/{id}", http.HandlerFunc(h.Get))
 	mux.Handle("POST /v1/reservations/{id}/payment", http.HandlerFunc(h.ConfirmPayment))
 
-	return Metrics(RequestID(Logging(log)(Recover(log)(mux))))
+	return Tracing(Metrics(RequestID(Logging(log)(Recover(log)(mux)))))
 }
