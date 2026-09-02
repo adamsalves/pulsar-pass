@@ -3,14 +3,31 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/adamsalves/pulsar-pass/internal/core/application"
+	"github.com/adamsalves/pulsar-pass/internal/core/domain"
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 )
+
+// terminalReserveRejection names terminal business rejections that
+// must be acknowledged instead of retried: retrying can never change
+// the outcome, so the delivery budget is better spent on commands that
+// might still succeed (e.g. ones racing their state projection).
+func terminalReserveRejection(err error) (reason string, ok bool) {
+	switch {
+	case errors.Is(err, domain.ErrSoldOut):
+		return "sold_out", true
+	case errors.Is(err, domain.ErrSaleNotOpen):
+		return "sale_not_open", true
+	default:
+		return "", false
+	}
+}
 
 // Subscribers owns the pulsar-core message handlers: it decodes the
 // reservation commands and outcome events and drives the reservation
@@ -68,6 +85,16 @@ func (s *Subscribers) onReserve(ctx context.Context, msg eventbus.Message) error
 	})
 	recordReserveOutcome(err)
 	if err != nil {
+		// Terminal business outcomes are acknowledged, not retried —
+		// see terminalReserveRejection. Everything else (decode bugs,
+		// store errors) stays retryable.
+		if reason, terminal := terminalReserveRejection(err); terminal {
+			s.log.Info("reservation rejected",
+				"event_id", cmd.EventID,
+				"reason", reason,
+			)
+			return nil
+		}
 		return fmt.Errorf("reserve: %w", err)
 	}
 	s.log.Info("reservation created",

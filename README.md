@@ -58,7 +58,28 @@ Com `make compose-up` + os serviços rodando (`make run-*`):
 
 - **Grafana** (`http://localhost:3000`, login anônimo) — dashboard "PulsarPass — Saga overview" provisionado com os cinco sinais do blueprint (p99 do gateway, esgotamento, lag das outboxes, idade de PENDING, DLQ) e o estado do acelerador Redis.
 - **Prometheus** (`http://localhost:9090`) — coleta os 5 serviços via `/metrics` (host.docker.internal).
-- **Jaeger** (`http://localhost:16686`) — tracing distribuído OTLP; exporte `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` antes de subir os serviços para habilitar (unset = sem traces, métricas seguem). A saga aparece como um trace único: gateway → core → payment → core.
+- **Jaeger** (`http://localhost:16686`) — tracing distribuído OTLP; exporte `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` antes de subir os serviços para habilitar (unset = sem traces, métricas seguem). A saga aparece como um trace único: gateway → core → payment → core. Sob carga, limite o volume com `OTEL_TRACE_SAMPLE_RATIO` (ex. `0.1`).
+
+## Prova de carga
+
+Perfil de referência: 300 VUs de pico, ramp 2min + platô 3min + ramp-down 1min, p99 do ingress < 250ms. Os knobs são env no script (`deployments/k6/flash-sale.js`).
+
+```bash
+make compose-up                                    # Postgres, Redis, NATS (+ Jaeger/Prometheus/Grafana)
+make migrate-core-up && make migrate-payment-up
+make build
+
+# recomendado sob carga: acquirer rápido e relay folgado
+SIMULATED_CHARGE_DELAY=1ms make run-payment &
+RELAY_BATCH=500 POLL_INTERVAL=200ms make run-horizon &
+make run-core & make run-chrono & make run-gateway &
+
+EVENT_ID=$(make load-seed CAPACITY=1000)           # semeia o evento e imprime o id
+make load-run EVENT_ID=$EVENT_ID                   # suíte k6 (thresholds: p99, 0% falhas)
+make load-verify                                   # invariantes de inventário: imprime 0 se sãos
+```
+
+O `load-run` executa o k6 em container com `--network host` (semântica Linux; em macOS/Windows ajuste para `host.docker.internal` no Makefile). Enquanto roda, acompanhe o dashboard "PulsarPass — Saga overview" no Grafana (`:3000`): `sold_out` dispara no pico, o backlog das outboxes precisa drenar a zero no ramp-down e o breaker não pode abrir sem Redis fora.
 
 ## Desenvolvimento
 

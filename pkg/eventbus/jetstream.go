@@ -33,7 +33,10 @@ type JetStreamConfig struct {
 	URL         string
 	Streams     []StreamSpec
 	DedupWindow time.Duration
-	// Consumer tuning; zero values use AckWait 30s and MaxDeliver 5.
+	// Consumer tuning; zero values use AckWait 30s and MaxDeliver 10.
+	// Handler errors are NAKed with a paced delay (see redeliveryDelay),
+	// so MaxDeliver bounds how long a retryable command — e.g. one that
+	// raced its state projection — stays retryable before the DLQ.
 	AckWait    time.Duration
 	MaxDeliver int
 	BackOff    []time.Duration
@@ -67,7 +70,7 @@ func ConnectJetStream(ctx context.Context, cfg JetStreamConfig, log *slog.Logger
 		cfg.AckWait = 30 * time.Second
 	}
 	if cfg.MaxDeliver <= 0 {
-		cfg.MaxDeliver = 5
+		cfg.MaxDeliver = 10
 	}
 
 	nc, err := nats.Connect(cfg.URL,
@@ -209,12 +212,38 @@ func (j *JetStream) handle(msg jetstream.Msg, consumer string, handler Handler) 
 			"subject", msg.Subject(),
 			"error", err,
 		)
-		_ = msg.Nak()
+		// A plain NAK requests an immediate redelivery, so a command that
+		// keeps failing burns its whole delivery budget in milliseconds —
+		// a payment racing its context projection never survives to see
+		// the projection land. Pace the retries instead.
+		delay := 2 * time.Second
+		if md, mdErr := msg.Metadata(); mdErr == nil {
+			delay = redeliveryDelay(md.NumDelivered)
+		}
+		_ = msg.NakWithDelay(delay)
 		return
 	}
 	span.End()
 	if err := msg.Ack(); err != nil {
 		j.log.Debug("ack failed; broker will redeliver", "consumer", consumer, "error", err)
+	}
+}
+
+// redeliveryDelay paces NAK-driven redeliveries by delivery attempt:
+// quick first retries, then backing off. The budget is still bounded by
+// MaxDeliver — pacing changes how the budget is spent, not its size.
+func redeliveryDelay(numDelivered uint64) time.Duration {
+	switch numDelivered {
+	case 1:
+		return 100 * time.Millisecond
+	case 2:
+		return 250 * time.Millisecond
+	case 3:
+		return 500 * time.Millisecond
+	case 4:
+		return time.Second
+	default:
+		return 2 * time.Second
 	}
 }
 
