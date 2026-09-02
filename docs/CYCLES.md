@@ -15,6 +15,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [2 — Saga ponta a ponta](#ciclo-2--saga-ponta-a-ponta) | Saga e2e com testcontainers + acelerador Redis | ✅ concluído |
 | [2½ — Hardening pós-Ciclo 2](#ciclo-2½--hardening-pós-ciclo-2) | Posse da reserva no payment, `-race` no `make test`, circuit breaker do hold | ✅ concluído |
 | [3 — Observabilidade](#ciclo-3--observabilidade) | OTel + métricas Prometheus + traces OTLP + dashboards | ✅ concluído |
+| [4 — Prova de carga](#ciclo-4--prova-de-carga) | k6 a 300 VUs: p99, zero overbooking e hardening do broker | ✅ concluído |
 
 ---
 
@@ -294,6 +295,46 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 - `internal/gateway` — scrape de métricas sem vazar id concreto; server span com request id.
 - `internal/payment` — as quatro classes de charge no scrape via fluxo real do `Handle`.
 - Gate completo com `-race` e e2e testcontainers verdes em todos os PRs (#27, #28, este).
+
+---
+
+## Ciclo 4 — Prova de carga
+
+**Objetivo:** validar p99 e zero overbooking sob pico (roadmap 4) com suíte k6 executável e reproduzível — e endurecer o broker onde a própria carga revelou furos.
+
+**Commits:** `ae311c5` → `<hash-final>`
+
+### Entregas
+
+**Sampler de traces configurável (#29, PR #31)**
+- `pkg/metrics` — `OTEL_TRACE_SAMPLE_RATIO` (0..1) troca a raiz para `TraceIDRatioBased` em `ParentBased`; unset mantém always sampling; valor inválido (incluindo `NaN`, que escapava do range check e era plataforma-dependente: amd64 amostrava tudo, arm64 nada) falha o init.
+
+**Tooling k6 + hardening do broker (PR #33)**
+- `deployments/k6/flash-sale.js` — perfil travado: 300 VUs de pico, ramp 2min + platô 3min + ramp-down 1min, threshold `p(99)<250` e `http_req_failed rate==0`, conversão (30%) paga no ato; knobs por env (`PEAK_VUS`, `PACE`, `CONVERSION_RATIO`, `CAPACITY`).
+- `deployments/k6/seed.sql` + `verify.sql` — evento semeado e **invariantes de inventário** pós-run: `reserved+sold ≤ capacity`, `sold_count == CONFIRMED`, `reserved_count == PENDING` (`make load-seed` / `load-run` / `load-verify`).
+- **Pacing de redelivery** (`pkg/eventbus/jetstream.go`) — NAKs agora usam `NakWithDelay` escalando com a tentativa (100ms→2s) e `MaxDeliver` default 5→10 (~14s de janela): um comando que corre contra sua projeção — `payment.process` chegando antes do `reservation_context`, i.e. usuário pagando logo após reservar — sobrevive; antes queimava o budget em ms e ia pra DLQ. Descoberta empírica: `BackOff` de consumer é inerte para NAK.
+- **Rejeições terminais ACKadas** (`internal/core/subscribers.go`) — `ErrSoldOut`/`ErrSaleNotOpen` são outcomes de negócio terminais: ACK com log+métrica em vez de 10 redeliveries e DLQ com alarme falso (3.160 NAKs no smoke). DLQ volta a significar "investigar".
+- **Métrica de DLQ por dono** (`pkg/eventbus`) — o advisory é broadcast: os 5 serviços incrementavam a mesma métrica (inflação 5× vista no run: 358.800 ≈ 5 × 71.760). Só o dono do consumer conta agora.
+
+**Run completo (300 VUs, evento de 1.000 ingressos)**
+- Ingress: **105.030 requests, 291,8 rps sustentados por 6min, p99 4,95ms** (alvo 250ms), 0% falhas, checks 100%.
+- Zero overbooking: **0 violações**; `292 CONFIRMED + 708 PENDING = 1000 = capacity` exato; outbox drenada a 0; breaker nunca abriu; sweep e compensações íntegros sob pico.
+- DLQ pós-correção: ~23k advisories no run final, todas `payment-process` — submissões de conversão contra reservas esgotadas (artefato do perfil cego do k6; usuário real só pagaria reserva existente) + corrida da #32. Follow-ups: **#32** (espera inline em `ErrContextNotFound`), **#34** (tolerância T-0 de `sale_not_open`).
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Zero overbooking sob pico | UPDATE condicional no Postgres sob 291 rps; `load-verify` = 0 violações |
+| Comando retryable sobrevive à corrida de estado | `NakWithDelay` escalando + `MaxDeliver` 10 (`jetstream.go`) |
+| Rejeição terminal não envenena a DLQ | ACK em `sold_out`/`sale_not_open` (`subscribers.go`) + teste de classificação |
+| Métrica de DLQ não multiplica por serviço | filtro de ownership no `listenDLQ` + teste com advisory alheio |
+| Volume de traces controlável sob carga | `OTEL_TRACE_SAMPLE_RATIO` com fail-fast (#29) |
+
+### Testes
+- `pkg/metrics` — sampler: ratio 0/1/unset/inválido (`NaN` incluso).
+- `pkg/eventbus` — `redeliveryDelay` (tabela); `TestDLQAdvisoryCountedByOwnerOnly` (advisory próprio conta, alheio ignorado).
+- `internal/core` — subscriber ACKa terminal e mantém retryable não-terminal (ports in-memory).
+- Gate completo com `-race` e e2e testcontainers verdes em todos os PRs (#31, #33, este).
 
 ---
 
