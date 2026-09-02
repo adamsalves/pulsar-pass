@@ -22,7 +22,11 @@ func Streams() []eventbus.StreamSpec {
 }
 
 // Connect opens a JetStream-backed bus with the shared topology and
-// production defaults.
+// production defaults. Handler failures are paced by the eventbus
+// (NakWithDelay growing with the delivery attempt, budget bounded by
+// MaxDeliver), so a command racing its state — payment.process arriving
+// before the reservation context projection — stays retryable for
+// seconds instead of burning its delivery budget instantly.
 func Connect(ctx context.Context, url string, log *slog.Logger) (*eventbus.JetStream, error) {
 	bus, err := eventbus.ConnectJetStream(ctx, eventbus.JetStreamConfig{
 		URL:         url,

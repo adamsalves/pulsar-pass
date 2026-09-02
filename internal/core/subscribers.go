@@ -3,14 +3,24 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/adamsalves/pulsar-pass/internal/core/application"
+	"github.com/adamsalves/pulsar-pass/internal/core/domain"
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 )
+
+// mapErrToReason names a terminal business rejection for logs.
+func mapErrToReason(err error) string {
+	if errors.Is(err, domain.ErrSoldOut) {
+		return "sold_out"
+	}
+	return "sale_not_open"
+}
 
 // Subscribers owns the pulsar-core message handlers: it decodes the
 // reservation commands and outcome events and drives the reservation
@@ -68,6 +78,18 @@ func (s *Subscribers) onReserve(ctx context.Context, msg eventbus.Message) error
 	})
 	recordReserveOutcome(err)
 	if err != nil {
+		// Sold-out and closed-sale are terminal business outcomes, not
+		// poison messages: retrying can never succeed, so acknowledge
+		// instead of burning the delivery budget and flooding the DLQ —
+		// the sold_out metric is the signal that matters. Everything else
+		// (decode bugs, store errors) stays retryable.
+		if errors.Is(err, domain.ErrSoldOut) || errors.Is(err, domain.ErrSaleNotOpen) {
+			s.log.Info("reservation rejected",
+				"event_id", cmd.EventID,
+				"reason", mapErrToReason(err),
+			)
+			return nil
+		}
 		return fmt.Errorf("reserve: %w", err)
 	}
 	s.log.Info("reservation created",
