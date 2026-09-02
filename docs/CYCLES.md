@@ -302,7 +302,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** validar p99 e zero overbooking sob pico (roadmap 4) com suíte k6 executável e reproduzível — e endurecer o broker onde a própria carga revelou furos.
 
-**Commits:** `ae311c5` → `<hash-final>`
+**Commits:** `ae311c5` → `2bbcd19`
 
 ### Entregas
 
