@@ -40,6 +40,14 @@ type JetStreamConfig struct {
 	AckWait    time.Duration
 	MaxDeliver int
 	BackOff    []time.Duration
+	// DLQQueueGroup names the queue group for the DLQ advisory listener.
+	// Advisories broadcast to every subscriber: without a group, every
+	// replica of every service receives each one and the owner's metric
+	// multiplies by its replica count. Setting the name (the service
+	// identity) makes the replicas share one delivery per advisory, so
+	// exactly one process counts it. Empty keeps the broadcast
+	// subscription (single-instance processes, tests).
+	DLQQueueGroup string
 }
 
 // JetStream is the production Bus backed by NATS JetStream. Message.ID
@@ -264,11 +272,16 @@ func redeliveryDelay(numDelivered uint64) time.Duration {
 
 func (j *JetStream) listenDLQ(ctx context.Context) {
 	defer j.wg.Done()
-	sub, err := j.nc.Subscribe("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>", func(m *nats.Msg) {
+	const advisorySubject = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>"
+	// The advisory payload is JSConsumerDeliveryExceededAdvisory: it has
+	// no subject field — stream and consumer identify the poisoned
+	// message's consumer, and stream_seq locates it in the stream.
+	handle := func(m *nats.Msg) {
 		var adv struct {
-			Stream   string `json:"stream"`
-			Consumer string `json:"consumer"`
-			Subject  string `json:"subject"`
+			Stream     string `json:"stream"`
+			Consumer   string `json:"consumer"`
+			StreamSeq  uint64 `json:"stream_seq"`
+			Deliveries uint64 `json:"deliveries"`
 		}
 		_ = json.Unmarshal(m.Data, &adv)
 		if !j.ownsConsumer(adv.Consumer) {
@@ -279,9 +292,23 @@ func (j *JetStream) listenDLQ(ctx context.Context) {
 		j.log.Error("message exceeded max deliveries (DLQ advisory)",
 			"stream", adv.Stream,
 			"consumer", adv.Consumer,
-			"subject", adv.Subject,
+			"stream_seq", adv.StreamSeq,
+			"deliveries", adv.Deliveries,
 		)
-	})
+	}
+	var (
+		sub *nats.Subscription
+		err error
+	)
+	if group := j.cfg.DLQQueueGroup; group != "" {
+		// Queue group: replicas of the same service share one delivery
+		// per advisory, so the metric counts once per service no matter
+		// how many replicas run; the ownership filter still drops
+		// advisories belonging to other services' consumers.
+		sub, err = j.nc.QueueSubscribe(advisorySubject, group, handle)
+	} else {
+		sub, err = j.nc.Subscribe(advisorySubject, handle)
+	}
 	if err != nil {
 		j.log.Error("failed to subscribe DLQ advisories", "error", err)
 		return

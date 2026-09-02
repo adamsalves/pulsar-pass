@@ -50,7 +50,7 @@ func run() error {
 	}
 	defer paymentPool.Close()
 
-	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	bus, err := broker.Connect(ctx, cfg.NATSURL, "pulsar-horizon", log)
 	if err != nil {
 		return err
 	}

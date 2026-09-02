@@ -85,7 +85,7 @@ func bootTTL(t *testing.T, ttl time.Duration) *harness {
 	holdStore := holds.New(strings.TrimPrefix(startRedis(t), "redis://"), log)
 	t.Cleanup(func() { _ = holdStore.Close() })
 
-	bus, err := broker.Connect(ctx, startNATS(t), log)
+	bus, err := broker.Connect(ctx, startNATS(t), "pulsar-e2e", log)
 	if err != nil {
 		t.Fatalf("connect broker: %v", err)
 	}

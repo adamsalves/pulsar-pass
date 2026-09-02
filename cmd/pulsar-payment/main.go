@@ -59,7 +59,7 @@ func run() error {
 		log,
 	)
 
-	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	bus, err := broker.Connect(ctx, cfg.NATSURL, "pulsar-payment", log)
 	if err != nil {
 		return err
 	}

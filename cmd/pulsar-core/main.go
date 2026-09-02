@@ -64,7 +64,7 @@ func run() error {
 		holdStore,
 	)
 
-	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	bus, err := broker.Connect(ctx, cfg.NATSURL, "pulsar-core", log)
 	if err != nil {
 		return err
 	}
