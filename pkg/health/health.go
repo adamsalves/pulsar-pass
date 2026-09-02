@@ -12,9 +12,12 @@ import (
 )
 
 // Server exposes /healthz (liveness) and /readyz (readiness) endpoints.
+// Extra handlers (e.g. the metrics endpoint) can be mounted before the
+// server starts serving.
 type Server struct {
 	log     *slog.Logger
 	http    *http.Server
+	mux     *http.ServeMux
 	ready   atomic.Bool
 	version atomic.Pointer[string]
 }
@@ -25,21 +28,28 @@ func NewServer(addr string, log *slog.Logger) *Server {
 	dev := "dev"
 	s.version.Store(&dev)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Version", *s.version.Load())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("GET /readyz", s.handleReady)
+	s.mux.HandleFunc("GET /readyz", s.handleReady)
 
 	s.http = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           s.mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s
+}
+
+// Mount registers an additional handler on the health server, e.g. the
+// Prometheus metrics endpoint under /metrics. Must be called before
+// ListenAndServe.
+func (s *Server) Mount(pattern string, handler http.Handler) {
+	s.mux.Handle(pattern, handler)
 }
 
 // SetVersion records the build version reported by the X-Version header.

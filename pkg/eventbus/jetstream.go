@@ -210,6 +210,7 @@ func (j *JetStream) listenDLQ(ctx context.Context) {
 			Subject  string `json:"subject"`
 		}
 		_ = json.Unmarshal(m.Data, &adv)
+		incDLQAdvisory(adv.Stream, adv.Consumer)
 		j.log.Error("message exceeded max deliveries (DLQ advisory)",
 			"stream", adv.Stream,
 			"consumer", adv.Consumer,

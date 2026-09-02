@@ -69,11 +69,14 @@ func (r *Relay) sweep(ctx context.Context) error {
 	if r.store == nil || r.bus == nil {
 		return nil
 	}
+	recordBacklog(ctx, r.store)
 	batch, err := r.store.FetchBatch(ctx, r.batchSize)
 	if err != nil {
+		recordSweepOutcome(0, true)
 		return err
 	}
 	published := make([]string, 0, len(batch))
+	failed := false
 	for _, rec := range batch {
 		msg := eventbus.Message{
 			ID:      rec.ID,
@@ -91,10 +94,12 @@ func (r *Relay) sweep(ctx context.Context) error {
 				"subject", rec.Subject,
 				"error", err,
 			)
+			failed = true
 			break
 		}
 		published = append(published, rec.ID)
 	}
+	recordSweepOutcome(len(published), failed)
 	if len(published) == 0 {
 		return nil
 	}

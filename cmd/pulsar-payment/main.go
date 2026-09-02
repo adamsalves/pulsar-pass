@@ -13,6 +13,7 @@ import (
 	pgadapter "github.com/adamsalves/pulsar-pass/internal/payment/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 	"github.com/adamsalves/pulsar-pass/pkg/pgtx"
 	"github.com/adamsalves/pulsar-pass/pkg/version"
@@ -31,6 +32,12 @@ func run() error {
 
 	cfg := payment.LoadConfig()
 	log := logger.New(cfg.Env)
+
+	metricsHandler, stopMetrics, err := metrics.Init(ctx, "pulsar-payment")
+	if err != nil {
+		return fmt.Errorf("init metrics: %w", err)
+	}
+	defer func() { _ = stopMetrics(context.Background()) }()
 
 	pool, err := pgpool.New(ctx, cfg.DatabaseURL, pgpool.Options{MaxConns: 10})
 	if err != nil {
@@ -64,6 +71,7 @@ func run() error {
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
+	healthServer.Mount("/metrics", metricsHandler)
 
 	errCh := make(chan error, 1)
 	go func() {

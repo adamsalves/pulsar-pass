@@ -15,6 +15,7 @@ import (
 	"github.com/adamsalves/pulsar-pass/internal/holds"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 	"github.com/adamsalves/pulsar-pass/pkg/pgtx"
 	"github.com/adamsalves/pulsar-pass/pkg/version"
@@ -34,13 +35,23 @@ func run() error {
 	cfg := core.LoadConfig()
 	log := logger.New(cfg.Env)
 
+	metricsHandler, stopMetrics, err := metrics.Init(ctx, "pulsar-core")
+	if err != nil {
+		return fmt.Errorf("init metrics: %w", err)
+	}
+	defer func() { _ = stopMetrics(context.Background()) }()
+
 	pool, err := pgpool.New(ctx, cfg.DatabaseURL, pgpool.Options{MaxConns: 10})
 	if err != nil {
 		return fmt.Errorf("connect database: %w", err)
 	}
 	defer pool.Close()
 
-	holdStore := holds.New(cfg.RedisAddr, log)
+	holdObserver, err := holds.NewOTelObserver("pulsar-core")
+	if err != nil {
+		return fmt.Errorf("build holds observer: %w", err)
+	}
+	holdStore := holds.New(cfg.RedisAddr, log, holds.WithObserver(holdObserver))
 	defer func() { _ = holdStore.Close() }()
 
 	service := application.NewReservationService(
@@ -65,6 +76,7 @@ func run() error {
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
+	healthServer.Mount("/metrics", metricsHandler)
 
 	errCh := make(chan error, 1)
 	go func() {

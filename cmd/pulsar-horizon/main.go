@@ -13,6 +13,7 @@ import (
 	horizonadapter "github.com/adamsalves/pulsar-pass/internal/horizon/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/pkg/health"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 	"github.com/adamsalves/pulsar-pass/pkg/version"
 )
@@ -30,6 +31,12 @@ func run() error {
 
 	cfg := horizon.LoadConfig()
 	log := logger.New(cfg.Env)
+
+	metricsHandler, stopMetrics, err := metrics.Init(ctx, "pulsar-horizon")
+	if err != nil {
+		return fmt.Errorf("init metrics: %w", err)
+	}
+	defer func() { _ = stopMetrics(context.Background()) }()
 
 	corePool, err := pgpool.New(ctx, cfg.CoreDBURL, pgpool.Options{MaxConns: 5})
 	if err != nil {
@@ -57,6 +64,7 @@ func run() error {
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)
+	healthServer.Mount("/metrics", metricsHandler)
 
 	errCh := make(chan error, 1)
 	go func() {
