@@ -143,10 +143,12 @@ func TestSamplingRatioControlsRootSpans(t *testing.T) {
 	})
 
 	t.Run("invalid value fails fast", func(t *testing.T) {
-		t.Setenv(metrics.OTLPSampleRatioEnv, "0.5x")
-		if _, _, err := metrics.Init(context.Background(), "test-service"); err == nil {
-			t.Fatal("Init() must reject an unparseable ratio")
+		for _, raw := range []string{"0.5x", "NaN", "2", "-1"} {
+			t.Setenv(metrics.OTLPSampleRatioEnv, raw)
+			if _, _, err := metrics.Init(context.Background(), "test-service"); err == nil {
+				t.Fatalf("Init() must reject the ratio %q", raw)
+			}
+			_ = metrics.Shutdown(context.Background())
 		}
-		_ = metrics.Shutdown(context.Background())
 	})
 }

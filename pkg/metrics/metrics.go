@@ -151,14 +151,16 @@ func initTraces(ctx context.Context, endpoint string, res *resource.Resource, ra
 // samplingRatio resolves the root sampling ratio: unset keeps always
 // sampling (the local profile), an explicit value must be a valid
 // ratio in [0, 1] and is enforced loudly — a typo must not silently
-// multiply the trace volume under load.
+// multiply the trace volume under load. The compound comparison
+// rejects NaN too: every ordered comparison against NaN is false, so
+// a plain range check would let it through.
 func samplingRatio() (float64, error) {
 	raw := os.Getenv(OTLPSampleRatioEnv)
 	if raw == "" {
 		return 1, nil
 	}
 	ratio, err := strconv.ParseFloat(raw, 64)
-	if err != nil || ratio < 0 || ratio > 1 {
+	if err != nil || !(ratio >= 0 && ratio <= 1) {
 		return 0, fmt.Errorf("invalid %s %q: expected a number between 0 and 1", OTLPSampleRatioEnv, raw)
 	}
 	return ratio, nil
