@@ -14,6 +14,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [5 — CI + Release (antecipado)](#ciclo-5--ci--release-antecipado) | GitHub Actions, GoReleaser, GHCR multi-arch, dependabot | ✅ concluído |
 | [2 — Saga ponta a ponta](#ciclo-2--saga-ponta-a-ponta) | Saga e2e com testcontainers + acelerador Redis | ✅ concluído |
 | [2½ — Hardening pós-Ciclo 2](#ciclo-2½--hardening-pós-ciclo-2) | Posse da reserva no payment, `-race` no `make test`, circuit breaker do hold | ✅ concluído |
+| [3 — Observabilidade](#ciclo-3--observabilidade) | OTel + métricas Prometheus + traces OTLP + dashboards | ✅ concluído |
 
 ---
 
@@ -243,6 +244,56 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 - `internal/payment/processor_test.go` — `TestHandleNonOwnerRejected` (sem charge/row/outbox), `TestHandleMissingUserRejected`; testes existentes atualizados ao contrato novo do comando.
 - `internal/e2e/saga_test.go` — `TestSagaPaymentByNonOwnerRejected` (impostor sem efeito colateral; dono confirma em seguida).
 - `internal/holds/holds_test.go` — 5 testes novos: short-circuit sem spam (`TestStoreBreakerShortCircuitsAfterConsecutiveFailures`), rearme da sonda (`TestStoreBreakerProbeFailureRearmsCooldown`), recovery (`TestStoreBreakerRecoversOnSuccessfulProbe`), concorrência 16 goroutines sob `-race` (`TestStoreBreakerUnderConcurrency`), store desabilitado (`TestStoreDisabledIgnoresBreakerOptions`).
+
+---
+
+## Ciclo 3 — Observabilidade
+
+**Objetivo:** entregar o §9 do blueprint — métricas Prometheus com os cinco sinais nomeados (p99 do gateway, esgotamento, lag do relay, idade de PENDING, DLQ), tracing OTLP com propagação ponta a ponta e dashboards provisionados — fechando a #22.
+
+**Commits:** `5f49afe` → `<hash-final>`
+
+### Entregas
+
+**Fundação (ADR-8 — OTel SDK + exporter Prometheus)**
+- `pkg/metrics/metrics.go` — `Init(ctx, service)`: provider global de métricas (registry Prometheus própria, resource com service name/version, runtime Go) + provider de traces OTLP quando `OTEL_EXPORTER_OTLP_ENDPOINT` existe (gRPC lazy, `ParentBased(AlwaysSample)`, W3C tracecontext). Rollback do init parcial em qualquer falha; duplo `Init` rejeitado.
+- `pkg/health/health.go` — `Mount(pattern, handler)`: cada serviço expõe `/metrics` na porta de health que já roda (9091–95).
+- Padrão de binding: instrumentos por pacote criados **lazily** contra o provider vigente no primeiro uso — binários emitem após `Init`; e2e/testes ligam no no-op sem custo e sem mudar assinaturas. Tracers resolvem **por chamada** (o `sync.Once` viciava o processo com o provider no-op de um teste anterior).
+
+**Métricas — os cinco sinais + acelerador**
+- `internal/gateway/middleware.go` — `Metrics`: requests por rota templateada (cardinalidade limitada), método e status + histograma de duração (p99).
+- `internal/core/metrics.go` + `subscribers.go` — `pulsar_core_reservations_total{op,outcome}`: `sold_out` com label próprio (sinal de esgotamento do blueprint), `sale_not_open`/`invalid`/`error` separados.
+- `internal/payment/metrics.go` — `pulsar_payment_charges_total{outcome}`: `approved`/`declined` (match por prefixo — o simulador retorna "card declined (forced by token)")/`window_elapsed`/`acquirer_error`.
+- `internal/chrono/metrics.go` + `adapter/postgres/source.go` — sweeps, expirações publicadas (contagem preservada em falha mid-batch) e `pulsar_chrono_pending_max_age_seconds` via novo `PendingAgeSource` opcional; gauge regravado a todo tick (last-value store congelava no máximo antigo).
+- `internal/horizon/metrics.go` + `adapter/postgres/store.go` — eventos relayed, sweeps com falha e `pulsar_horizon_outbox_backlog` via novo `BacklogCounter` opcional.
+- `pkg/eventbus/metrics.go` — `pulsar_eventbus_dlq_advisories_total{stream,consumer}` no listener de advisories.
+- `internal/holds/observer_otel.go` — `OTelObserver` ligado ao seam da #26 via `WithObserver` nos mains do core/chrono: ops por outcome (`degraded`/`short_circuited`), latência (só tentativas que chegaram ao Redis) e gauge `pulsar_holds_breaker_open`.
+
+**Tracing**
+- `pkg/eventbus/trace.go` — producer/consumer spans no bus: `Publish` injeta o contexto ativo nos headers (W3C `traceparent`; nil map inicializado — contrato fixado por teste) e `handle` extrai antes do handler, juntando toda a saga num trace só; falhas gravadas na span antes do NAK; `Correlation-Id` vira atributo.
+- `internal/gateway/middleware.go` — `Tracing`: server span raiz por request (rota, request id, status), dentro de `RequestID`; extração de upstream intencionalmente desativada (raiz do trace — decisão registrada em código).
+- `deployments/docker-compose.yml` — Jaeger all-in-one (UI `:16686`, porta OTLP `4317` publicada porque os serviços rodam no host), Prometheus e Grafana provisionados.
+
+**Dashboards e docs**
+- `deployments/docker/prometheus/prometheus.yml` — scrape dos 5 serviços via `host.docker.internal` (`host-gateway` no Linux).
+- `deployments/docker/grafana/` — datasource + dashboard "PulsarPass — Saga overview" (10 painéis: os cinco sinais do blueprint, degradação do acelerador e estado do breaker).
+- `docs/ARCHITECTURE.md` — ADR-8, §9 atualizado ao estado implementado; README com a seção de observabilidade.
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Zero custo quando desligado | instruments no-op até `metrics.Init` (testes/tools pagam nada) |
+| Trace único da saga | propagação `traceparent` no bus (`trace.go`) + teste ponta a ponta com JetStream real |
+| Cardinalidade limitada | rotas templateadas no gateway; classes de outcome fixadas por teste |
+| Last-value não congela | gauges regravados a todo tick (pending age, backlog, breaker) |
+| Falha de init não deixa estado parcial | rollback do provider global (`pkg/metrics`) |
+
+### Testes
+- `pkg/metrics` — scrape com valores corretos + runtime; duplo `Init`; branch OTLP com trace context válido.
+- `pkg/eventbus/trace_test.go` — span consumer carrega o trace id do producer através de headers reais do JetStream; `TestPublishWithActiveSpanAndNilHeaders` fixa o contrato de publish com span ativa.
+- `internal/gateway` — scrape de métricas sem vazar id concreto; server span com request id.
+- `internal/payment` — as quatro classes de charge no scrape via fluxo real do `Handle`.
+- Gate completo com `-race` e e2e testcontainers verdes em todos os PRs (#27, #28, este).
 
 ---
 

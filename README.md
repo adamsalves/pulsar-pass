@@ -50,7 +50,15 @@ curl -s -X POST localhost:8080/v1/reservations/<id>/payment \
   -d '{"payment_method_token":"tok-1"}'
 ```
 
-Health/readiness por serviço: `GET :9091..9095/healthz` e `/readyz`. Sem NATS no ar em modo desenvolvimento, o gateway cai para bus in-memory (`BUS_MODE=memory` força isso).
+Health/readiness por serviço: `GET :9091..9095/healthz` e `/readyz`. Métricas Prometheus por serviço em `/metrics` nas mesmas portas. Sem NATS no ar em modo desenvolvimento, o gateway cai para bus in-memory (`BUS_MODE=memory` força isso).
+
+## Observabilidade
+
+Com `make compose-up` + os serviços rodando (`make run-*`):
+
+- **Grafana** (`http://localhost:3000`, login anônimo) — dashboard "PulsarPass — Saga overview" provisionado com os cinco sinais do blueprint (p99 do gateway, esgotamento, lag das outboxes, idade de PENDING, DLQ) e o estado do acelerador Redis.
+- **Prometheus** (`http://localhost:9090`) — coleta os 5 serviços via `/metrics` (host.docker.internal).
+- **Jaeger** (`http://localhost:16686`) — tracing distribuído OTLP; exporte `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` antes de subir os serviços para habilitar (unset = sem traces, métricas seguem). A saga aparece como um trace único: gateway → core → payment → core.
 
 ## Desenvolvimento
 

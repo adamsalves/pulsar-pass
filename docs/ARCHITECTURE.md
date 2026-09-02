@@ -197,8 +197,9 @@ Constantes de tipo/subject vivem em `pkg/envelope` (fonte única de contratos no
 
 ## 9. Observabilidade
 
-- **Tracing**: OpenTelemetry com `correlation_id` propagado no envelope de evento e `X-Request-Id` no HTTP.
-- **Métricas**: Prometheus (latência p99 do gateway, taxa de rejeição por esgotamento, lag do outbox relay, idade máxima de reservas PENDING, contadores de DLQ).
+- **Métricas**: OTel SDK + exporter Prometheus (ADR-8) em `/metrics` na porta de health de cada serviço (9091–95), instrumentos no-op até o bootstrap. Sinais: `pulsar_gateway_http_requests_total`/`..._request_duration_seconds` (p99), `pulsar_core_reservations_total` (com `outcome="sold_out"`), `pulsar_payment_charges_total`, `pulsar_horizon_outbox_backlog`, `pulsar_chrono_pending_max_age_seconds`, `pulsar_eventbus_dlq_advisories_total`, `pulsar_holds_*` (ops, latência, estado do breaker).
+- **Tracing**: OTel OTLP (Jaeger no compose, UI `:16686`) com `traceparent` propagado nos headers do broker — gateway abre a raiz e cada handler consome dentro do mesmo trace; `correlation_id` é atributo de span. Gateway não extrai contexto de upstream por decisão (raiz do trace).
+- **Dashboards**: Prometheus + Grafana provisionados no compose; dashboard "PulsarPass — Saga overview" cobre os cinco sinais do blueprint e o alarme de acelerador degradado.
 - **Logs**: `log/slog` estruturado; `production` em JSON.
 
 ## 10. Layout do Repositório
@@ -259,7 +260,7 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | 1 | Adaptadores reais: Postgres (capacidade atômica, outbox, dedup) + NATS JetStream (streams, consumers durables, DLQ) | ✅ |
 | 2 | Saga ponta a ponta (sucesso + compensações) com testes de integração (testcontainers) + acelerador Redis | ✅ |
 | 2½ | Hardening pós-Ciclo 2: posse da reserva no payment (`ErrNotOwner`), `-race` no `make test`, circuit breaker do acelerador Redis | ✅ |
-| 3 | Observabilidade: OTel + métricas + dashboards | próximo |
+| 3 | Observabilidade: OTel + métricas + dashboards | ✅ |
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | backlog |
 | 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
 | 6 | Deploy (cluster + observabilidade) e hardening | backlog |
