@@ -1,11 +1,11 @@
 package gateway_test
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -56,7 +56,7 @@ func TestTracingMiddlewareOpensServerSpan(t *testing.T) {
 	assertAttr(t, (*server).Attributes(), "http.request_id", "req-trace-1")
 }
 
-func assertAttr(t *testing.T, attrs []sdktrace.Attribute, key, want string) {
+func assertAttr(t *testing.T, attrs []attribute.KeyValue, key, want string) {
 	t.Helper()
 	for _, kv := range attrs {
 		if string(kv.Key) == key && kv.Value.AsString() == want {

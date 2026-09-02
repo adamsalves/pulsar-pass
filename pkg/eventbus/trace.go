@@ -2,7 +2,6 @@ package eventbus
 
 import (
 	"context"
-	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,23 +12,6 @@ import (
 // boundaries; it travels next to the W3C trace context injected by the
 // bus, so a trace stays addressable by the id stamped on events.
 const CorrelationIDHeader = "Correlation-Id"
-
-// busTracing holds the lazily created tracer: the package initializes
-// before the binaries run metrics.Init, so binding must happen on
-// first use, against the global provider in place at that moment.
-type busTracing struct {
-	once   sync.Once
-	tracer trace.Tracer
-}
-
-var busTrace busTracing
-
-func (t *busTracing) get() trace.Tracer {
-	t.once.Do(func() {
-		t.tracer = otel.Tracer("pulsar-pass/eventbus")
-	})
-	return t.tracer
-}
 
 // headerCarrier adapts the message header map to the propagator
 // interfaces so the W3C trace context rides the broker headers.
@@ -55,14 +37,13 @@ func injectTraceContext(ctx context.Context, msg *Message) {
 }
 
 // publishSpan opens the producer-side span for one outgoing message.
+// The tracer resolves against the global provider on every call:
+// without metrics.Init it is a no-op, and tests may swap providers
+// freely.
 func publishSpan(ctx context.Context, msg *Message) (context.Context, trace.Span) {
-	ctx, span := busTrace.get().Start(ctx, "publish "+msg.Subject,
+	ctx, span := otel.Tracer("pulsar-pass/eventbus").Start(ctx, "publish "+msg.Subject,
 		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination.name", msg.Subject),
-			attribute.String("messaging.message.id", msg.ID),
-		),
+		trace.WithAttributes(messagingAttributes(msg)...),
 	)
 	if cid := msg.Headers[CorrelationIDHeader]; cid != "" {
 		span.SetAttributes(attribute.String("correlation_id", cid))
@@ -76,16 +57,21 @@ func publishSpan(ctx context.Context, msg *Message) (context.Context, trace.Span
 // publish join the same trace.
 func consumeSpan(ctx context.Context, msg *Message) (context.Context, trace.Span) {
 	ctx = otel.GetTextMapPropagator().Extract(ctx, headerCarrier(msg.Headers))
-	ctx, span := busTrace.get().Start(ctx, "consume "+msg.Subject,
+	ctx, span := otel.Tracer("pulsar-pass/eventbus").Start(ctx, "consume "+msg.Subject,
 		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination.name", msg.Subject),
-			attribute.String("messaging.message.id", msg.ID),
-		),
+		trace.WithAttributes(messagingAttributes(msg)...),
 	)
 	if cid := msg.Headers[CorrelationIDHeader]; cid != "" {
 		span.SetAttributes(attribute.String("correlation_id", cid))
 	}
 	return ctx, span
+}
+
+// messagingAttributes describes one message for both span kinds.
+func messagingAttributes(msg *Message) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("messaging.system", "nats"),
+		attribute.String("messaging.destination.name", msg.Subject),
+		attribute.String("messaging.message.id", msg.ID),
+	}
 }

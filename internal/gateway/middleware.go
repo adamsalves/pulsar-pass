@@ -81,32 +81,14 @@ func (i *httpInstruments) get() error {
 	return i.initError
 }
 
-// tracingInstruments carries the lazily created tracer: the package
-// initializes before the binaries run metrics.Init, so binding must
-// happen on first use, against the global provider in place at that
-// moment.
-type tracingInstruments struct {
-	once   sync.Once
-	tracer trace.Tracer
-}
-
-var gwTracer tracingInstruments
-
-func (i *tracingInstruments) get() trace.Tracer {
-	i.once.Do(func() {
-		i.tracer = otel.Tracer("pulsar-pass/gateway")
-	})
-	return i.tracer
-}
-
 // Tracing opens a server span per request with the route template and
-// the request id as attributes. Without metrics.Init (or without an
-// OTLP endpoint) the global provider is a no-op and the span is free.
+// the request id as attributes. The tracer resolves against the global
+// provider on every request: without metrics.Init it is a no-op, and
+// tests may swap providers freely.
 func Tracing(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tracer := gwTracer.get()
 		route := routeTemplate(r)
-		spanCtx, span := tracer.Start(r.Context(), "HTTP "+r.Method+" "+route,
+		spanCtx, span := otel.Tracer("pulsar-pass/gateway").Start(r.Context(), "HTTP "+r.Method+" "+route,
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(
 				attribute.String("http.route", route),
