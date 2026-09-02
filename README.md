@@ -79,7 +79,7 @@ make load-run EVENT_ID=$EVENT_ID                   # suíte k6 (thresholds: p99,
 make load-verify                                   # invariantes de inventário: imprime 0 se sãos
 ```
 
-Enquanto roda, acompanhe o dashboard "PulsarPass — Saga overview" no Grafana (`:3000`): `sold_out` dispara no pico, o backlog das outboxes precisa drenar a zero no ramp-down e o breaker não pode abrir sem Redis fora.
+O `load-run` executa o k6 em container com `--network host` (semântica Linux; em macOS/Windows ajuste para `host.docker.internal` no Makefile). Enquanto roda, acompanhe o dashboard "PulsarPass — Saga overview" no Grafana (`:3000`): `sold_out` dispara no pico, o backlog das outboxes precisa drenar a zero no ramp-down e o breaker não pode abrir sem Redis fora.
 
 ## Desenvolvimento
 

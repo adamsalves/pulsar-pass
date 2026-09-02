@@ -14,12 +14,19 @@ import (
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 )
 
-// mapErrToReason names a terminal business rejection for logs.
-func mapErrToReason(err error) string {
-	if errors.Is(err, domain.ErrSoldOut) {
-		return "sold_out"
+// terminalReserveRejection names terminal business rejections that
+// must be acknowledged instead of retried: retrying can never change
+// the outcome, so the delivery budget is better spent on commands that
+// might still succeed (e.g. ones racing their state projection).
+func terminalReserveRejection(err error) (reason string, ok bool) {
+	switch {
+	case errors.Is(err, domain.ErrSoldOut):
+		return "sold_out", true
+	case errors.Is(err, domain.ErrSaleNotOpen):
+		return "sale_not_open", true
+	default:
+		return "", false
 	}
-	return "sale_not_open"
 }
 
 // Subscribers owns the pulsar-core message handlers: it decodes the
@@ -78,15 +85,13 @@ func (s *Subscribers) onReserve(ctx context.Context, msg eventbus.Message) error
 	})
 	recordReserveOutcome(err)
 	if err != nil {
-		// Sold-out and closed-sale are terminal business outcomes, not
-		// poison messages: retrying can never succeed, so acknowledge
-		// instead of burning the delivery budget and flooding the DLQ —
-		// the sold_out metric is the signal that matters. Everything else
-		// (decode bugs, store errors) stays retryable.
-		if errors.Is(err, domain.ErrSoldOut) || errors.Is(err, domain.ErrSaleNotOpen) {
+		// Terminal business outcomes are acknowledged, not retried —
+		// see terminalReserveRejection. Everything else (decode bugs,
+		// store errors) stays retryable.
+		if reason, terminal := terminalReserveRejection(err); terminal {
 			s.log.Info("reservation rejected",
 				"event_id", cmd.EventID,
-				"reason", mapErrToReason(err),
+				"reason", reason,
 			)
 			return nil
 		}

@@ -88,8 +88,9 @@ export default function () {
         },
       },
     );
-    check(pay, { 'payment accepted 202': (r) => r.status === 202 });
-    paymentsSubmitted.add(1);
+    if (check(pay, { 'payment accepted 202': (r) => r.status === 202 })) {
+      paymentsSubmitted.add(1);
+    }
   }
   sleep(PACE);
 }
