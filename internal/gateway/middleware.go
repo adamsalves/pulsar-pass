@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/adamsalves/pulsar-pass/pkg/uid"
 )
@@ -78,6 +79,32 @@ func (i *httpInstruments) get() error {
 			api.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5))
 	})
 	return i.initError
+}
+
+// Tracing opens a server span per request with the route template and
+// the request id as attributes. The gateway is the root of each saga's
+// trace by design: incoming W3C context is not extracted, because no
+// upstream service currently calls the gateway over HTTP — all
+// inter-service traffic rides the bus, which propagates. Revisit when
+// an HTTP caller chain exists. The tracer resolves against the global
+// provider on every request: without metrics.Init it is a no-op, and
+// tests may swap providers freely.
+func Tracing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route := routeTemplate(r)
+		spanCtx, span := otel.Tracer("pulsar-pass/gateway").Start(r.Context(), "HTTP "+r.Method+" "+route,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.route", route),
+				attribute.String("http.method", r.Method),
+				attribute.String("http.request_id", RequestIDFrom(r.Context())),
+			),
+		)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(spanCtx))
+		span.SetAttributes(attribute.Int("http.status_code", rec.status))
+		span.End()
+	})
 }
 
 // Metrics records request counts by route template and status plus the
