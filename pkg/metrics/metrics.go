@@ -114,7 +114,10 @@ func Init(ctx context.Context, service string) (http.Handler, func(context.Conte
 
 // initTraces installs the OTLP tracer provider. The gRPC exporter
 // connects lazily, so a collector that is not up yet only delays span
-// delivery instead of failing the process.
+// delivery instead of failing the process. TLS collectors are out of
+// scope for the local/compose topology of this cycle: both endpoint
+// schemes dial plaintext, and real transport security joins the
+// production wiring (Ciclo 6).
 func initTraces(ctx context.Context, endpoint string, res *resource.Resource) (func(context.Context) error, error) {
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(stripEndpointScheme(endpoint)),

@@ -82,7 +82,11 @@ func (i *httpInstruments) get() error {
 }
 
 // Tracing opens a server span per request with the route template and
-// the request id as attributes. The tracer resolves against the global
+// the request id as attributes. The gateway is the root of each saga's
+// trace by design: incoming W3C context is not extracted, because no
+// upstream service currently calls the gateway over HTTP — all
+// inter-service traffic rides the bus, which propagates. Revisit when
+// an HTTP caller chain exists. The tracer resolves against the global
 // provider on every request: without metrics.Init it is a no-op, and
 // tests may swap providers freely.
 func Tracing(next http.Handler) http.Handler {

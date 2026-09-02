@@ -47,8 +47,7 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686" # UI
-      # 4317 (OTLP gRPC) stays internal: services reach it on the
-      # compose network via OTEL_EXPORTER_OTLP_ENDPOINT.
+      - "4317:4317" # OTLP gRPC - `make run-*` services live on the host
 
 volumes:
   pgdata:

@@ -112,6 +112,51 @@ func TestJetStreamTraceContextPropagation(t *testing.T) {
 	}
 }
 
+// TestPublishWithActiveSpanAndNilHeaders pins the Publish contract: a
+// headers-less message must publish without panicking when the context
+// carries an active span - the propagator writes traceparent and the
+// bus initializes the nil map for it.
+func TestPublishWithActiveSpanAndNilHeaders(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}))
+	t.Cleanup(func() {
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	})
+
+	bus := newTestBus(t, nil)
+
+	tracer := provider.Tracer("test-nil-headers")
+	ctx, span := tracer.Start(context.Background(), "caller")
+	defer span.End()
+
+	received := make(chan eventbus.Message, 1)
+	if err := bus.Subscribe("test.nilhdr", "nilhdr-consumer", func(_ context.Context, msg eventbus.Message) error {
+		received <- msg
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if err := bus.Publish(ctx, eventbus.Message{
+		ID:      "nilhdr-1",
+		Subject: "test.nilhdr",
+		Payload: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("publish with nil headers + active span: %v", err)
+	}
+	select {
+	case msg := <-received:
+		if msg.Headers["traceparent"] == "" {
+			t.Errorf("delivered message missing traceparent: %v", msg.Headers)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was not called")
+	}
+}
+
 func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	names := make([]string, 0, len(spans))
 	for _, s := range spans {

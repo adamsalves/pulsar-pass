@@ -30,9 +30,14 @@ func (c headerCarrier) Keys() []string {
 }
 
 // injectTraceContext stamps the caller's span onto the outgoing
-// message headers. Without an active span the propagator writes
+// message headers. It writes into msg.Headers by design — the message
+// itself carries the trace context to the consumer — so a nil map is
+// initialized here; without an active span the propagator writes
 // nothing and the message stays traceless.
 func injectTraceContext(ctx context.Context, msg *Message) {
+	if msg.Headers == nil {
+		msg.Headers = make(map[string]string, 2)
+	}
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier(msg.Headers))
 }
 
