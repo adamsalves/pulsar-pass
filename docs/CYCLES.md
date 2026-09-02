@@ -251,7 +251,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** entregar o §9 do blueprint — métricas Prometheus com os cinco sinais nomeados (p99 do gateway, esgotamento, lag do relay, idade de PENDING, DLQ), tracing OTLP com propagação ponta a ponta e dashboards provisionados — fechando a #22.
 
-**Commits:** `5f49afe` → `<hash-final>`
+**Commits:** `5f49afe` → `0a11c73`
 
 ### Entregas
 
