@@ -1,0 +1,48 @@
+{{/* One Service per service exposing the health port. They are HEADLESS
+(clusterIP: None) on purpose: the Prometheus scrape resolves each name
+to every pod IP (dns_sd_configs), so each replica is scraped
+individually — scraping through a normal Service load-balances across
+replicas and drops series that only exist on some pods (per-process
+counters). The gateway gets an extra NodePort Service for HTTP (kind
+maps host :8080 to nodePort 30080). */}}
+{{- range $name, $cfg := .Values.services }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsar-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulsar-pass.componentLabels" (dict "root" $ "name" $name) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: pulsar-pass
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - name: health
+      port: {{ include "pulsar-pass.healthPort" $name }}
+      targetPort: health
+{{- if and (eq $name "gateway") $cfg.httpNodePort }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsar-gateway-http
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulsar-pass.componentLabels" (dict "root" $ "name" $name) | nindent 4 }}
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: pulsar-pass
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: {{ $cfg.httpNodePort }}
+{{- end }}
+{{- end }}

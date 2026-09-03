@@ -1,0 +1,60 @@
+{{/* One Deployment per service. Every service runs replicas >= 2 by
+default: gateway is stateless; core/payment consumers are durables with
+queue groups; the chrono sweeper and the horizon relay use
+FOR UPDATE SKIP LOCKED, safe to run concurrently. */}}
+{{- range $name, $cfg := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsar-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulsar-pass.componentLabels" (dict "root" $ "name" $name) | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicas | default $.Values.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pulsar-pass
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulsar-pass.componentLabels" (dict "root" $ "name" $name) | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.registry }}/pulsar-{{ $name }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          env:
+            {{- include "pulsar-pass.commonEnv" (dict "root" $) | nindent 12 }}
+            {{- include "pulsar-pass.serviceEnv" (dict "root" $ "name" $name) | nindent 12 }}
+            - name: HEALTH_ADDR
+              value: {{ printf ":%s" (include "pulsar-pass.healthPort" $name) | quote }}
+          ports:
+            - name: health
+              containerPort: {{ include "pulsar-pass.healthPort" $name }}
+              {{- if eq $name "gateway" }}
+            - name: http
+              containerPort: 8080
+              {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+{{- end }}

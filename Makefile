@@ -13,7 +13,7 @@ CAPACITY     ?= 1000
 EVENT_ID     ?=
 BASE_URL     ?= http://localhost:8080
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra release-check release-build release-snapshot clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra deploy-services release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -118,6 +118,17 @@ deploy-infra:
 		--version $(GRAFANA_CHART_VERSION) -n monitoring --create-namespace \
 		-f deployments/cluster/helm/grafana-values.yaml --wait --timeout 5m
 	@echo "infra up: postgres/redis/nats in pulsarpass, prometheus/grafana/jaeger in monitoring"
+
+# Services from the release pipeline images (GHCR). For a local smoke,
+# build dev images, load them into kind and pass IMAGE_TAG=dev:
+#   make docker-build && kind load docker-image pulsarpass/<svc>:dev --name pulsarpass
+#   make deploy-services IMAGE_TAG=dev
+IMAGE_TAG ?= latest
+
+deploy-services:
+	helm upgrade --install pulsar-pass deployments/helm/pulsar-pass \
+		-n pulsarpass --create-namespace \
+		--set image.tag=$(IMAGE_TAG) --wait --timeout 5m
 
 release-check:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }

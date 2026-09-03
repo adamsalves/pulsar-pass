@@ -1,0 +1,11 @@
+PulsarPass is deployed.
+
+{{- if .Values.services.gateway.httpNodePort }}
+
+Gateway (HTTP):   http://localhost:8080  (kind maps nodePort {{ .Values.services.gateway.httpNodePort }})
+Grafana:          http://localhost:3000
+Prometheus:       http://localhost:9090
+Jaeger UI:        http://localhost:16686
+{{- end }}
+
+Check the saga smoke with `make cluster-smoke` (deployments/cluster/smoke.sh).
