@@ -394,7 +394,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** zerar as issues abertas dos reviews dos ciclos anteriores (sem tocar o blueprint): hardening do bus (#38/#47), três decisões de backlog (#34 T-0, #39 custo serial documentado + alerta, #42 rebind de métricas) e revisão completa da documentação com README completíssimo. O roadmap 0–7 fica 100% ✅; resta o Ciclo 8 (identidade real no gateway, #45).
 
-**Commits:** `de7826b` → `6fb64f4` (PRs #48, #49, #50)
+**Commits:** `de7826b` → `2504359` (PRs #48, #49, #50)
 
 ### Entregas
 
