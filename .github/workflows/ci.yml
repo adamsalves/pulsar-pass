@@ -90,6 +90,32 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
+  deploy-smoke:
+    name: Deploy smoke (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: pulsarpass
+          config: deployments/kind/config.yaml
+      - name: Build dev images
+        run: make docker-build
+      - name: Load images into kind
+        run: |
+          for svc in gateway core chrono payment horizon; do
+            kind load docker-image "pulsarpass/pulsar-$svc:dev" --name pulsarpass
+          done
+      - name: Deploy infrastructure and services
+        run: |
+          make deploy-infra
+          make deploy-services IMAGE_TAG=dev IMAGE_REGISTRY=pulsarpass \
+            EXTRA_SETS='--set services.payment.simulatedFailureRate=0'
+      - name: Run saga smoke
+        run: make cluster-smoke
+
   pr-title:
     name: PR title (Conventional Commits)
     if: github.event_name == 'pull_request'

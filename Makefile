@@ -13,7 +13,7 @@ CAPACITY     ?= 1000
 EVENT_ID     ?=
 BASE_URL     ?= http://localhost:8080
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra deploy-services release-check release-build release-snapshot clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra deploy-services cluster-smoke release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -112,12 +112,21 @@ cluster-down:
 
 deploy-infra:
 	kubectl apply -f deployments/cluster/
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update >/dev/null 2>&1 || true
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null 2>&1 || true
 	helm upgrade --install prometheus prometheus-community/prometheus \
 		--version $(PROM_CHART_VERSION) -n monitoring --create-namespace \
 		-f deployments/cluster/helm/prometheus-values.yaml --wait --timeout 5m
 	helm upgrade --install grafana grafana/grafana \
 		--version $(GRAFANA_CHART_VERSION) -n monitoring --create-namespace \
 		-f deployments/cluster/helm/grafana-values.yaml --wait --timeout 5m
+	# Dashboards are generated from the compose dashboard JSON (single
+	# source of truth); the sidecar label makes Grafana pick them up.
+	kubectl create configmap grafana-dashboards -n monitoring \
+		--from-file=deployments/docker/grafana/dashboards/ \
+		--dry-run=client -o yaml \
+		| kubectl label --local -f - grafana_dashboard=1 -o yaml --dry-run=client \
+		| kubectl apply -f -
 	@echo "infra up: postgres/redis/nats in pulsarpass, prometheus/grafana/jaeger in monitoring"
 
 # Services from the release pipeline images (GHCR). For a local smoke,
@@ -132,7 +141,14 @@ deploy-services:
 	helm upgrade --install pulsar-pass deployments/helm/pulsar-pass \
 		-n pulsarpass --create-namespace \
 		--set image.registry=$(IMAGE_REGISTRY) --set image.tag=$(IMAGE_TAG) \
-		--wait --timeout 5m
+		$(EXTRA_SETS) --wait --timeout 5m
+
+# Deterministic saga smoke against the kind cluster (see the script
+# header for preconditions). CI uses EXTRA_SETS to zero the simulated
+# failure rate; locally the smoke retries the saga on a simulator
+# decline.
+cluster-smoke:
+	./deployments/cluster/smoke.sh
 
 release-check:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
