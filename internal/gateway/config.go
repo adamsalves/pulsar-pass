@@ -34,9 +34,11 @@ type Config struct {
 }
 
 // ParseAuthTokens parses the AUTH_TOKENS CSV ("token=user_id,...").
-// Malformed pairs fail loudly — a typo must not silently drop an
-// identity from the table — and an empty spec is an error, never a
-// silent lockout.
+// Malformed pairs and duplicate tokens fail loudly — a typo must not
+// silently drop an identity from the table — and an empty spec is an
+// error for direct callers (a silent total lockout is not an option);
+// through LoadConfig an empty env resolves to the dev defaults before
+// this parser runs.
 func ParseAuthTokens(spec string) (map[string]string, error) {
 	if strings.TrimSpace(spec) == "" {
 		return nil, fmt.Errorf("invalid %s: at least one token=user_id pair is required", AuthTokensEnv)
@@ -57,8 +59,9 @@ func ParseAuthTokens(spec string) (map[string]string, error) {
 }
 
 // LoadConfig reads pulsar-gateway settings from the environment.
-// AUTH_TOKENS unset falls back to the dev mapping; a present-but-
-// malformed value fails the boot instead of shrinking the table.
+// AUTH_TOKENS unset or empty falls back to the dev mapping (the
+// codebase-wide config.String convention); a present-but-malformed
+// value fails the boot instead of shrinking the table.
 func LoadConfig() (Config, error) {
 	authTokens, err := ParseAuthTokens(config.String(AuthTokensEnv, devAuthTokens))
 	if err != nil {

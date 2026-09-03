@@ -49,9 +49,12 @@ func TestParseAuthTokens(t *testing.T) {
 	})
 }
 
-// TestLoadConfigDefaultsToDevTokens: unset AUTH_TOKENS falls back to
-// the documented dev mapping the quickstart and the smoke run use.
+// TestLoadConfigDefaultsToDevTokens: AUTH_TOKENS unset or empty falls
+// back to the documented dev mapping the quickstart and the smoke run
+// use. The empty value is pinned so the test stays deterministic on
+// hosts where the variable is exported (e.g. after the load recipe).
 func TestLoadConfigDefaultsToDevTokens(t *testing.T) {
+	t.Setenv("AUTH_TOKENS", "")
 	cfg, err := gateway.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

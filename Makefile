@@ -13,8 +13,9 @@ CAPACITY     ?= 1000
 EVENT_ID     ?=
 BASE_URL     ?= http://localhost:8080
 # Distinct identities for the load test (see load-auth-tokens): must
-# exceed the event CAPACITY — a pending reservation pins its user until
-# the TTL sweep, so LOAD_USERS >= 2x CAPACITY is a safe default.
+# exceed the event CAPACITY — a reservation pins its user for the
+# event's lifetime (one PENDING or CONFIRMED reservation per user per
+# event), so LOAD_USERS >= 2x CAPACITY is a safe default.
 LOAD_USERS   ?= 2000
 
 .PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-auth-tokens load-run load-verify cluster-up cluster-down deploy-infra deploy-services cluster-smoke release-check release-build release-snapshot clean

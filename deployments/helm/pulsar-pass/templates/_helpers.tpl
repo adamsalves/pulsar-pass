@@ -41,11 +41,16 @@ internal/<svc>/config.go). */}}
   value: "nats"
 - name: MAX_RESERVATION_QTY
   value: {{ $cfg.maxReservationQty | default "8" | quote }}
+{{- /* Same guard as secret-gateway-auth.yaml: an empty authTokens
+   skips the Secret AND the reference, otherwise the pod would point
+   at a missing Secret (CreateContainerConfigError). */}}
+{{- if $cfg.authTokens }}
 - name: AUTH_TOKENS
   valueFrom:
     secretKeyRef:
       name: pulsar-gateway-auth
       key: AUTH_TOKENS
+{{- end }}
 {{- else if eq $svc "core" }}
 - name: DATABASE_URL
   value: {{ include "pulsar-pass.dsn" (dict "root" $root "db" "pulsar_core") | quote }}

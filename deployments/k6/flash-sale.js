@@ -59,10 +59,11 @@ function randHex(n) {
 // Identity: the gateway resolves user ids from bearer tokens (cycle 8).
 // AUTH_TOKENS is the same CSV the gateway runs with — generate a load
 // table with `make load-auth-tokens LOAD_USERS=2000` and pass it to
-// both the gateway process and this script. A user whose reservation
-// is still pending (unique index: one active reservation per user per
-// event) cannot reserve again, so the table must be larger than the
-// event capacity (LOAD_USERS >= 2x CAPACITY is a safe default).
+// both the gateway process and this script. A reservation pins its
+// user for the whole event lifetime (unique index: one PENDING or
+// CONFIRMED reservation per user per event), so the table must be
+// larger than the event capacity (LOAD_USERS >= 2x CAPACITY is a safe
+// default).
 const credentials = (__ENV.AUTH_TOKENS || '')
   .split(',')
   .map((pair) => pair.trim().split('='))
