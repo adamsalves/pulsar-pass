@@ -1,0 +1,11 @@
+# Two namespaces: pulsarpass (data stores + services) and monitoring
+# (prometheus, grafana, jaeger).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pulsarpass
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

@@ -1,6 +1,9 @@
 GO ?= go
 SERVICES := pulsar-gateway pulsar-core pulsar-chrono pulsar-payment pulsar-horizon
 K6_IMAGE := grafana/k6:1.4.0
+KIND_CLUSTER ?= pulsarpass
+PROM_CHART_VERSION := 29.27.0
+GRAFANA_CHART_VERSION := 10.5.15
 
 CORE_DB      ?= postgres://pulsar:pulsar@localhost:5432/pulsar_core?sslmode=disable
 PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=disable
@@ -10,7 +13,7 @@ CAPACITY     ?= 1000
 EVENT_ID     ?=
 BASE_URL     ?= http://localhost:8080
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify release-check release-build release-snapshot clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -81,8 +84,7 @@ docker-build:
 	done
 
 # Load test: compose-up + the five `make run-*` services must be up.
-# load-seed prints the EVENT_ID; pass it back to load-run.
-load-seed:
+# load-seed prints the EVENT_ID; pass it back to load-run.load-seed:
 	@docker compose -f deployments/docker-compose.yml exec -T postgres \
 		psql -U pulsar -d pulsar_core -q -tA -v capacity=$(CAPACITY) -f - < deployments/k6/seed.sql
 
@@ -97,6 +99,25 @@ load-run:
 load-verify:
 	@docker compose -f deployments/docker-compose.yml exec -T postgres \
 		psql -U pulsar -d pulsar_core -tA -f - < deployments/k6/verify.sql
+
+# kind cluster for the deploy (cycle 6): cluster-up creates it with the
+# host port mappings; deploy-infra provisions the data stores (manifests)
+# and the observability stack (pinned upstream charts).
+cluster-up:
+	kind create cluster --name $(KIND_CLUSTER) --config deployments/kind/config.yaml
+
+cluster-down:
+	kind delete cluster --name $(KIND_CLUSTER)
+
+deploy-infra:
+	kubectl apply -f deployments/cluster/
+	helm upgrade --install prometheus prometheus-community/prometheus \
+		--version $(PROM_CHART_VERSION) -n monitoring --create-namespace \
+		-f deployments/cluster/helm/prometheus-values.yaml --wait --timeout 5m
+	helm upgrade --install grafana grafana/grafana \
+		--version $(GRAFANA_CHART_VERSION) -n monitoring --create-namespace \
+		-f deployments/cluster/helm/grafana-values.yaml --wait --timeout 5m
+	@echo "infra up: postgres/redis/nats in pulsarpass, prometheus/grafana/jaeger in monitoring"
 
 release-check:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
