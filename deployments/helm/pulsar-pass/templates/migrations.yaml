@@ -1,0 +1,78 @@
+{{/* Migration Jobs run as pre-install/pre-upgrade hooks so the schema
+exists before any rollout references it. The SQL is embedded from the
+repository's migrations/ directory (symlinked into the chart) — a
+single source of truth, no drift between local and cluster runs.
+helm.sh/hook-delete-policy removes succeeded Jobs and recreates them
+on every upgrade. */}}
+
+{{- if .Values.migrations.enabled }}
+
+{{- $hookAnn := dict
+      "helm.sh/hook" "pre-install,pre-upgrade"
+      "helm.sh/hook-weight" "-1"
+      "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" -}}
+
+{{- range $db, $dir := dict "core" "core" "payment" "payment" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pulsar-pass-migrations-{{ $db }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulsar-pass.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    {{- toYaml $hookAnn | nindent 4 }}
+data:
+  {{- range $path, $_ := $.Files.Glob (printf "migrations/%s/*.sql" $dir) }}
+  {{ base $path }}: |-
+{{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pulsar-pass-migrations-{{ $db }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulsar-pass.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    {{- toYaml $hookAnn | nindent 4 }}
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "pulsar-pass.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ $.Values.migrations.image }}
+          args:
+            - "-path"
+            - "/migrations"
+            - "-database"
+            - {{ include "pulsar-pass.dsn" (dict "root" $ "db" (printf "pulsar_%s" $db)) | quote }}
+            - "up"
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: migrations
+          configMap:
+            name: pulsar-pass-migrations-{{ $db }}
+{{- end }}
+
+{{- end }}

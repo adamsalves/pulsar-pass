@@ -1,0 +1,68 @@
+# PulsarPass services. The chart ships one Deployment + health Service
+# per service, pre-install/pre-upgrade migration Jobs and the gateway
+# NodePort. Dev-oriented defaults mirror the compose topology; every
+# value can be overridden per environment.
+
+image:
+  # Images published by the release pipeline (cycle 5): one per service,
+  # tagged {version, sha, latest}.
+  registry: ghcr.io/adamsalves/pulsar-pass
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# production switches logs to JSON; the binaries default to development.
+appEnv: production
+
+# In-cluster endpoints (namespace pulsarpass for infra, monitoring for
+# the OTLP collector side of Jaeger).
+natsUrl: nats://nats.pulsarpass.svc:4222
+# Hold accelerator (core/chrono only; the gateway never dials Redis).
+# Point at the in-cluster Redis, or set to "" for a deliberate disable
+# without dial attempts (StringAllowEmpty distinguishes unset from
+# empty; PostgreSQL stays the authority either way).
+redisAddr: redis.pulsarpass.svc:6379
+otelEndpoint: jaeger.monitoring.svc:4317
+
+postgres:
+  host: postgres.pulsarpass.svc
+  port: "5432"
+  user: pulsar
+  password: pulsar # dev-only, same as compose; override per environment
+
+# Replicas per service: 2 proves the horizontal-safety properties of
+# the design — durables + queue groups (core, payment, gateway),
+# FOR UPDATE SKIP LOCKED (chrono sweeper, horizon relay) — and with it
+# the DLQ advisory dedup between replicas (issue #36).
+replicas: 2
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+migrations:
+  enabled: true
+  # Runs the SQL migrations as pre-install/pre-upgrade hooks, so the
+  # schema always exists before the first rollout of a release.
+  image: migrate/migrate:v4.19.1
+
+services:
+  gateway:
+    # Exposed to the host through the kind port mapping :8080 -> 30080.
+    httpNodePort: 30080
+    maxReservationQty: "8"
+  core: {}
+  chrono:
+    sweepInterval: 5s
+    sweepBatch: "100"
+  payment:
+    # Product defaults; the smoke run overrides the failure rate to 0
+    # for deterministic assertions.
+    simulatedFailureRate: "0.05"
+    simulatedChargeDelay: 250ms
+  horizon:
+    pollInterval: 1s
+    relayBatch: "200"

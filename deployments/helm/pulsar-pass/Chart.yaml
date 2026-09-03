@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pulsar-pass
+description: PulsarPass flash-sale reservation services (gateway, core, chrono, payment, horizon)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

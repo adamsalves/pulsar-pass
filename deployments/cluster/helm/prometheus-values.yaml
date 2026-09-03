@@ -1,8 +1,6 @@
 # Values for prometheus-community/prometheus (pinned version in the
 # Makefile). Dev cluster: ephemeral storage (compose has none either)
 # and only the server — no node exporter, alertmanager or pushgateway.
-# The PulsarPass services are scraped from the static service DNS names;
-# targets stay down until make deploy-services runs, then go up.
 server:
   persistentVolume:
     enabled: false
@@ -14,15 +12,36 @@ server:
       cpu: 500m
       memory: 512Mi
 
+# One job per service via dns_sd_configs against HEADLESS health
+# services (pulsar-pass chart): the name resolves to every pod IP, so
+# each replica is scraped individually. Scraping through a normal
+# Service load-balances and drops per-process series when replicas > 1.
 extraScrapeConfigs: |
-  - job_name: pulsarpass
-    static_configs:
-      - targets:
-          - pulsar-gateway.pulsarpass.svc:9091
-          - pulsar-core.pulsarpass.svc:9092
-          - pulsar-chrono.pulsarpass.svc:9093
-          - pulsar-payment.pulsarpass.svc:9094
-          - pulsar-horizon.pulsarpass.svc:9095
+  - job_name: pulsar-gateway
+    dns_sd_configs:
+      - names: [pulsar-gateway.pulsarpass.svc]
+        type: A
+        port: 9091
+  - job_name: pulsar-core
+    dns_sd_configs:
+      - names: [pulsar-core.pulsarpass.svc]
+        type: A
+        port: 9092
+  - job_name: pulsar-chrono
+    dns_sd_configs:
+      - names: [pulsar-chrono.pulsarpass.svc]
+        type: A
+        port: 9093
+  - job_name: pulsar-payment
+    dns_sd_configs:
+      - names: [pulsar-payment.pulsarpass.svc]
+        type: A
+        port: 9094
+  - job_name: pulsar-horizon
+    dns_sd_configs:
+      - names: [pulsar-horizon.pulsarpass.svc]
+        type: A
+        port: 9095
 
 # Dev cluster: only the server — the subchart extras (node exporter,
 # kube-state-metrics, pushgateway) add pods without value here, and
