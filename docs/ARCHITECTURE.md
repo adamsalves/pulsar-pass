@@ -34,7 +34,7 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 
 | Serviço | Responsabilidade | Comunicação |
 |---|---|---|
-| `pulsar-gateway` | Ingress HTTP: autenticação, rate limiting, validação e publicação de comandos. Idempotency-Key obrigatória nas mutações | HTTP → NATS (comandos) |
+| `pulsar-gateway` | Ingress HTTP: validação, idempotência (`Idempotency-Key` obrigatória nas mutações) e publicação de comandos. Identidade client-supplied via `X-User-Id` (identidade verificada é o próximo ciclo) | HTTP → NATS (comandos) |
 | `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Capacidade consumida por update atômico no Postgres (autoridade); Redis registra `hold:{reservation_id}` como acelerador, com degradação graciosa | Consome comandos/eventos, publica eventos |
 | `pulsar-chrono` | TTL worker: monitora `reservations.expires_at` (sweep no Postgres) e emite `reservation.expired` | Postgres → NATS |
 | `pulsar-payment` | Processa o pagamento na janela TTL (acquirer simulado no MVP) e emite `payment.succeeded` / `payment.failed` | Consome comando, publica eventos |
@@ -68,12 +68,11 @@ sequenceDiagram
 
     U->>GW: POST /v1/reservations (Idempotency-Key)
     GW->>N: publish reservation.reserve (Nats-Msg-Id)
+    GW-->>U: 202 Accepted (reservation_id)
     N->>C: consome comando
     C->>PG: BEGIN; UPDATE events SET reserved_count = reserved_count + 1 WHERE id = $1 AND reserved_count + sold_count < capacity; INSERT reservation (PENDING, expires_at); INSERT outbox (ticket.reserved); COMMIT
     alt commit ok (assento garantido)
         C->>R: SET hold:{reservation_id} EX 600 (acelerador)
-        C-->>GW: resposta (reservation_id, expires_at)
-        GW-->>U: 201 Created
         U->>GW: POST /v1/reservations/{id}/payment (Idempotency-Key)
         GW->>N: publish payment.process
         N->>P: consome comando
@@ -81,10 +80,9 @@ sequenceDiagram
         P->>N: publish payment.succeeded (Nats-Msg-Id)
         N->>C: consome evento
         C->>PG: BEGIN; reservation → CONFIRMED; reserved_count-1; sold_count+1; tickets → SOLD; outbox (ticket.confirmed); COMMIT
-        GW-->>U: ingresso confirmado
     else capacidade esgotada
-        C-->>GW: rejeição imediata (sold out)
-        GW-->>U: 409 Conflict
+        Note over C,PG: sold_out: rejeição terminal — ACK na 1ª entrega (o budget fica para comandos que ainda podem vencer)
+        Note over U: sem resposta síncrona: comandos são assíncronos — visível no dashboard (pulsar_core_reservations_total) e no trace da saga
     end
 ```
 
@@ -108,7 +106,7 @@ sequenceDiagram
     C->>PG: BEGIN; reservation → EXPIRED; reserved_count-1; tickets → AVAILABLE; outbox (ticket.released); COMMIT
     Note over C,PG: mesma transação garante consistência estado + evento
     N->>CH: ack
-    U-->>U: recebe 409/410 ao tentar pagar após expiração
+    U-->>U: pagamento após expiração falha com "reservation window elapsed" (payment.failed → assento liberado)
 ```
 
 O mesmo caminho de compensação é acionado por `payment.failed` (recusa) e `reservation.cancelled` (desistência), consumidos pelo `pulsar-core`.

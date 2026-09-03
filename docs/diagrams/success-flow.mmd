@@ -10,12 +10,11 @@ sequenceDiagram
 
     U->>GW: POST /v1/reservations (Idempotency-Key)
     GW->>N: publish reservation.reserve (Nats-Msg-Id)
+    GW-->>U: 202 Accepted (reservation_id)
     N->>C: consome comando
     C->>PG: BEGIN; UPDATE events SET reserved_count = reserved_count + 1 WHERE id = $1 AND reserved_count + sold_count < capacity; INSERT reservation (PENDING, expires_at); INSERT outbox (ticket.reserved); COMMIT
     alt commit ok (assento garantido)
         C->>R: SET hold:{reservation_id} EX 600 (acelerador)
-        C-->>GW: resposta (reservation_id, expires_at)
-        GW-->>U: 201 Created
         U->>GW: POST /v1/reservations/{id}/payment (Idempotency-Key)
         GW->>N: publish payment.process
         N->>P: consome comando
@@ -23,8 +22,8 @@ sequenceDiagram
         P->>N: publish payment.succeeded (Nats-Msg-Id)
         N->>C: consome evento
         C->>PG: BEGIN; reservation → CONFIRMED; reserved_count-1; sold_count+1; tickets → SOLD; outbox (ticket.confirmed); COMMIT
-        GW-->>U: ingresso confirmado
+        Note over U: resultado assíncrono: estado da reserva visível no dashboard (pulsar_core_reservations_total), no trace da saga e na consulta quando implementada
     else capacidade esgotada
-        C-->>GW: rejeição imediata (sold out)
-        GW-->>U: 409 Conflict
+        Note over C,PG: sold_out: rejeição terminal — ACK na 1ª entrega (o budget fica para comandos que ainda podem vencer)
+        Note over U: sem resposta síncrona: comandos são assíncronos — visível no dashboard e no trace
     end
