@@ -43,8 +43,9 @@ command -v python3 >/dev/null || fail "python3 is required"
 kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || fail "namespace $NAMESPACE not found; run make deploy-infra + deploy-services"
 # Any HTTP answer proves the gateway is reachable (the HTTP port has no
 # GET route; /healthz lives on the health port, not exposed to the host).
+# curl prints 000 for connection failures — only 2xx-5xx count.
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$GATEWAY_URL/" || true)
-[[ "$code" =~ ^[0-9]{3}$ ]] || fail "gateway unreachable at $GATEWAY_URL"
+[[ "$code" =~ ^[2-5][0-9]{2}$ ]] || fail "gateway unreachable at $GATEWAY_URL (last status: $code)"
 
 # --- run one saga; echoes reservation id on success ------------------------
 run_saga() {
@@ -128,19 +129,24 @@ done
 
 # --- observability ----------------------------------------------------------
 log "checking Prometheus targets"
-# min over all pulsar-* targets: 1 = everything up, 0 = something down,
-# no series = targets registered but not scraped yet (fresh clusters:
-# first scrape happens within the scrape interval). Poll until the
-# series materializes instead of failing on the race.
-minup=""
+# Two scalar queries, polled together (fresh clusters register and scrape
+# targets within the scrape interval):
+#   - min(up) == 1  -> every resolved target is up;
+#   - count(count by (job) (up)) == 5 -> all five jobs resolved at least
+#     one target. min() alone passes vacuously when a whole job has no
+#     series (service renamed, scaled to zero) — the paired count closes
+#     that hole, and both must hold before the smoke proceeds.
+PROM_JOBS=5
+prom_query() { curl -fsS -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || true; }
+minup=""; jobs_seen=""
 for _ in $(seq 1 18); do
-  minup=$(curl -fsS -G "$PROM_URL/api/v1/query" \
-    --data-urlencode 'query=min(up{job=~"pulsar-.*"})' \
-    | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || true)
-  [[ "$minup" == "1" ]] && break
+  minup=$(prom_query 'min(up{job=~"pulsar-.*"})')
+  jobs_seen=$(prom_query 'count(count by (job) (up{job=~"pulsar-.*"}))')
+  [[ "$minup" == "1" && "$jobs_seen" == "$PROM_JOBS" ]] && break
   sleep 5
 done
-[[ "$minup" == "1" ]] || fail "Prometheus pulsar-* targets not all up (min up=${minup:-none})"
+[[ "$minup" == "1" && "$jobs_seen" == "$PROM_JOBS" ]] \
+  || fail "Prometheus pulsar-* targets unhealthy (min up=${minup:-none}, jobs with targets=${jobs_seen:-none}/$PROM_JOBS)"
 
 log "checking Jaeger trace"
 traces="[]"
