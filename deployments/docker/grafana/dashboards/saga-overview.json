@@ -154,7 +154,7 @@
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         {
-          "expr": "max by (stream, consumer) (rate(pulsar_eventbus_dlq_advisories_total[5m]))",
+          "expr": "sum by (stream, consumer) (rate(pulsar_eventbus_dlq_advisories_total[5m]))",
           "legendFormat": "{{stream}} {{consumer}}"
         }
       ]
