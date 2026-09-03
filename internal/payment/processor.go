@@ -56,6 +56,21 @@ type PaymentRequested struct {
 // redelivery budget on a race that resolves in milliseconds, the
 // processor re-reads the projection inline before handing the retryable
 // error back for paced redelivery.
+//
+// Known tradeoff (deliberate): the wait cannot distinguish a projection
+// that is still landing from one that will never exist — a command with
+// a phantom reservation_id (gateway bug, publish straight to the
+// subject) pays the full budget of serial consumer time per delivery,
+// ≈1.5s inline + paced broker redeliveries up to MaxDeliver, and a wave
+// of them delays legitimate payments behind the sequential consume
+// loop. reservation_context is never deleted and the gateway only
+// publishes for reservations it created, so exposure is bounded. The
+// operational signal is
+// pulsar_payment_context_waits_total{outcome="exhausted"}: a sustained
+// rate means phantom IDs (or an anomalous projection lag), while a
+// healthy race profile shows resolved dominating. Alert rule ships in
+// the Grafana provisioning; a short-lived negative cache of IDs without
+// projection is the follow-up only if that signal ever justifies it.
 const (
 	defaultContextWaitAttempts = 3
 	defaultContextWaitDelay    = 500 * time.Millisecond
