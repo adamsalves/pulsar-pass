@@ -148,15 +148,68 @@ func TestJetStreamRedeliveryOnHandlerFailure(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
+	// In regime the redelivery arrives in ~200ms, but the CI runner
+	// runs the whole suite with -race plus coverage: under that
+	// contention the scheduler can stretch well past a 5s window, so
+	// the deadline is generous — the assertion is that the redelivery
+	// arrives, not that it is fast (pacing is bounded by the config).
+	const deliveryTimeout = 15 * time.Second
 	select {
 	case <-deliveries:
-	case <-time.After(5 * time.Second):
+	case <-time.After(deliveryTimeout):
 		t.Fatal("timeout waiting for first delivery")
 	}
 	fail.Store(false)
 	select {
 	case <-deliveries:
-	case <-time.After(5 * time.Second):
+	case <-time.After(deliveryTimeout):
 		t.Fatal("timeout waiting for redelivery after handler failure")
+	}
+}
+
+func TestJetStreamHandlerContextIsCanceledOnClose(t *testing.T) {
+	bus := newTestBus(t, nil)
+
+	started := make(chan struct{})
+	canceled := make(chan error, 1)
+	if err := bus.Subscribe("test.cancel", "test-cancel", func(ctx context.Context, _ eventbus.Message) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		canceled <- ctx.Err()
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if err := bus.Publish(context.Background(), eventbus.Message{
+		ID:      "c1",
+		Subject: "test.cancel",
+		Payload: []byte("c1"),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the handler to start")
+	}
+
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- bus.Close(context.Background()) }()
+
+	// Close must unwind the in-flight handler through its context:
+	// parking the handler would otherwise hold wg.Wait for the whole
+	// inline wait budget on every shutdown.
+	select {
+	case err := <-canceled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("handler ctx error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the handler context to be canceled by Close")
+	}
+	if err := <-closeErr; err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
