@@ -44,11 +44,15 @@ internal/<svc>/config.go). */}}
 {{- else if eq $svc "core" }}
 - name: DATABASE_URL
   value: {{ include "pulsar-pass.dsn" (dict "root" $root "db" "pulsar_core") | quote }}
+- name: REDIS_ADDR
+  value: {{ $root.Values.redisAddr | quote }}
 - name: RESERVATION_TTL
   value: 10m
 {{- else if eq $svc "chrono" }}
 - name: DATABASE_URL
   value: {{ include "pulsar-pass.dsn" (dict "root" $root "db" "pulsar_core") | quote }}
+- name: REDIS_ADDR
+  value: {{ $root.Values.redisAddr | quote }}
 - name: SWEEP_INTERVAL
   value: {{ $cfg.sweepInterval | default "5s" | quote }}
 - name: SWEEP_BATCH

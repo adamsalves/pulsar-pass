@@ -16,6 +16,11 @@ appEnv: production
 # In-cluster endpoints (namespace pulsarpass for infra, monitoring for
 # the OTLP collector side of Jaeger).
 natsUrl: nats://nats.pulsarpass.svc:4222
+# Hold accelerator (core/chrono only; the gateway never dials Redis).
+# Point at the in-cluster Redis, or set to "" for a deliberate disable
+# without dial attempts (StringAllowEmpty distinguishes unset from
+# empty; PostgreSQL stays the authority either way).
+redisAddr: redis.pulsarpass.svc:6379
 otelEndpoint: jaeger.monitoring.svc:4317
 
 postgres:

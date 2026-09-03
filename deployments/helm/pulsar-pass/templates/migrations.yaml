@@ -5,6 +5,8 @@ single source of truth, no drift between local and cluster runs.
 helm.sh/hook-delete-policy removes succeeded Jobs and recreates them
 on every upgrade. */}}
 
+{{- if .Values.migrations.enabled }}
+
 {{- $hookAnn := dict
       "helm.sh/hook" "pre-install,pre-upgrade"
       "helm.sh/hook-weight" "-1"
@@ -71,4 +73,6 @@ spec:
         - name: migrations
           configMap:
             name: pulsar-pass-migrations-{{ $db }}
+{{- end }}
+
 {{- end }}

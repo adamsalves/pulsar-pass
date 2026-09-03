@@ -1,8 +1,6 @@
 # Values for prometheus-community/prometheus (pinned version in the
 # Makefile). Dev cluster: ephemeral storage (compose has none either)
 # and only the server — no node exporter, alertmanager or pushgateway.
-# The PulsarPass services are scraped from the static service DNS names;
-# targets stay down until make deploy-services runs, then go up.
 server:
   persistentVolume:
     enabled: false

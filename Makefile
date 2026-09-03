@@ -121,15 +121,18 @@ deploy-infra:
 	@echo "infra up: postgres/redis/nats in pulsarpass, prometheus/grafana/jaeger in monitoring"
 
 # Services from the release pipeline images (GHCR). For a local smoke,
-# build dev images, load them into kind and pass IMAGE_TAG=dev:
+# build dev images, load them into kind and pass IMAGE_TAG=dev with the
+# local registry:
 #   make docker-build && kind load docker-image pulsarpass/<svc>:dev --name pulsarpass
-#   make deploy-services IMAGE_TAG=dev
+#   make deploy-services IMAGE_TAG=dev IMAGE_REGISTRY=pulsarpass
 IMAGE_TAG ?= latest
+IMAGE_REGISTRY ?= ghcr.io/adamsalves/pulsar-pass
 
 deploy-services:
 	helm upgrade --install pulsar-pass deployments/helm/pulsar-pass \
 		-n pulsarpass --create-namespace \
-		--set image.tag=$(IMAGE_TAG) --wait --timeout 5m
+		--set image.registry=$(IMAGE_REGISTRY) --set image.tag=$(IMAGE_TAG) \
+		--wait --timeout 5m
 
 release-check:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser is not installed"; exit 1; }
