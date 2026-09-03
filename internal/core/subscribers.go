@@ -18,15 +18,20 @@ import (
 // must be acknowledged instead of retried: retrying can never change
 // the outcome, so the delivery budget is better spent on commands that
 // might still succeed (e.g. ones racing their state projection).
+//
+// sale_not_open is deliberately NOT terminal: commands published
+// seconds before the sale opens (clients queued against T-0) die on
+// the frontier if acknowledged. As retryable they ride the paced
+// redelivery budget — roughly 14s of tolerance with the default
+// MaxDeliver — and succeed once the sale opens. The outcome metric
+// counts every attempt as sale_not_open, so a sustained rate after
+// the window is the signal of a client-side clock or payload problem,
+// not a lost command.
 func terminalReserveRejection(err error) (reason string, ok bool) {
-	switch {
-	case errors.Is(err, domain.ErrSoldOut):
+	if errors.Is(err, domain.ErrSoldOut) {
 		return "sold_out", true
-	case errors.Is(err, domain.ErrSaleNotOpen):
-		return "sale_not_open", true
-	default:
-		return "", false
 	}
+	return "", false
 }
 
 // Subscribers owns the pulsar-core message handlers: it decodes the
@@ -86,8 +91,10 @@ func (s *Subscribers) onReserve(ctx context.Context, msg eventbus.Message) error
 	recordReserveOutcome(err)
 	if err != nil {
 		// Terminal business outcomes are acknowledged, not retried —
-		// see terminalReserveRejection. Everything else (decode bugs,
-		// store errors) stays retryable.
+		// see terminalReserveRejection. Everything else stays retryable:
+		// sale_not_open (commands queued against the T-0 frontier wait
+		// for the window to open under the paced redelivery budget),
+		// decode bugs, store errors.
 		if reason, terminal := terminalReserveRejection(err); terminal {
 			s.log.Info("reservation rejected",
 				"event_id", cmd.EventID,
