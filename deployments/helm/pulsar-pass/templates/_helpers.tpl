@@ -41,6 +41,11 @@ internal/<svc>/config.go). */}}
   value: "nats"
 - name: MAX_RESERVATION_QTY
   value: {{ $cfg.maxReservationQty | default "8" | quote }}
+- name: AUTH_TOKENS
+  valueFrom:
+    secretKeyRef:
+      name: pulsar-gateway-auth
+      key: AUTH_TOKENS
 {{- else if eq $svc "core" }}
 - name: DATABASE_URL
   value: {{ include "pulsar-pass.dsn" (dict "root" $root "db" "pulsar_core") | quote }}

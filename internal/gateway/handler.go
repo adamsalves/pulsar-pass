@@ -46,11 +46,12 @@ func (h *ReservationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Idempotency-Key header is required")
 		return
 	}
-	userID := r.Header.Get("X-User-Id")
+	// The identity was resolved by Auth from the bearer token before the
+	// handler ran; an empty value here means the middleware is not
+	// wired — a server bug, not a client problem.
+	userID := UserIDFrom(r.Context())
 	if userID == "" {
-		// Identity must be explicit: a shared "guest" identity would let
-		// anonymous callers pay one another's reservations.
-		writeError(w, http.StatusBadRequest, "X-User-Id header is required")
+		writeError(w, http.StatusInternalServerError, "identity not resolved")
 		return
 	}
 	var req createReservationRequest
@@ -116,11 +117,11 @@ func (h *ReservationHandler) ConfirmPayment(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "Idempotency-Key header is required")
 		return
 	}
-	userID := r.Header.Get("X-User-Id")
+	// Same contract as Create: the payer identity was resolved by Auth;
+	// empty here is a wiring bug.
+	userID := UserIDFrom(r.Context())
 	if userID == "" {
-		// Same contract as Create: the payer identity must be explicit,
-		// and the identity check wins over body validation.
-		writeError(w, http.StatusBadRequest, "X-User-Id header is required")
+		writeError(w, http.StatusInternalServerError, "identity not resolved")
 		return
 	}
 	var req confirmPaymentRequest

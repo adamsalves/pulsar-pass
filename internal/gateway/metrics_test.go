@@ -24,7 +24,7 @@ func TestMetricsMiddlewareRecordsRequests(t *testing.T) {
 	api, _ := newTestServer(t)
 	resp := post(t, api, "/v1/reservations", map[string]string{
 		"Idempotency-Key": "idem-metrics",
-		"X-User-Id":       "user-metrics",
+		"Authorization":   "Bearer " + testToken,
 	}, map[string]any{"event_id": "evt-1", "quantity": 1})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", resp.StatusCode)
@@ -32,8 +32,8 @@ func TestMetricsMiddlewareRecordsRequests(t *testing.T) {
 	resp = post(t, api, "/v1/reservations/res-1/payment", map[string]string{
 		"Idempotency-Key": "idem-metrics",
 	}, map[string]any{"payment_method_token": "tok"})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (missing X-User-Id)", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (missing bearer token)", resp.StatusCode)
 	}
 
 	rec := httptest.NewRecorder()
@@ -45,14 +45,14 @@ func TestMetricsMiddlewareRecordsRequests(t *testing.T) {
 		`http_route="/v1/reservations"`,
 		`http_status_code="202"`,
 		`http_route="/v1/reservations/{id}/payment"`,
-		`http_status_code="400"`,
+		`http_status_code="401"`,
 		"pulsar_gateway_http_request_duration_seconds_bucket",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q:\n%s", want, body)
 		}
 	}
-	// The 400 on the payment route must not be counted under a concrete
+	// The 401 on the payment route must not be counted under a concrete
 	// reservation id (bounded cardinality).
 	if strings.Contains(body, `http_route="/v1/reservations/res-1/payment"`) {
 		t.Errorf("route label leaked a concrete id:\n%s", body)

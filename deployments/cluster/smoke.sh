@@ -17,6 +17,10 @@
 # declined payment is a legitimate business outcome (the reservation
 # goes FAILED), so the whole saga retries with a fresh reservation —
 # CI overrides the rate to 0 for determinism.
+#
+# Identity: the gateway resolves user ids from bearer tokens (cycle 8).
+# The token must exist in the cluster's AUTH_TOKENS table (Helm Secret;
+# the chart default mirrors the dev default below).
 set -euo pipefail
 
 NAMESPACE=pulsarpass
@@ -25,6 +29,7 @@ PROM_URL=${PROM_URL:-http://localhost:9090}
 JAEGER_URL=${JAEGER_URL:-http://localhost:16686}
 CAPACITY=${CAPACITY:-50}
 QUANTITY=${QUANTITY:-2}
+SMOKE_TOKEN=${SMOKE_TOKEN:-pp-token-user-1}
 MAX_SAGA_ATTEMPTS=3
 
 log() { printf '[smoke] %s\n' "$*"; }
@@ -51,7 +56,6 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$GATEWAY_URL/" || true)
 run_saga() {
   local attempt=$1
   local idem_seed="smoke-$(date +%s)-$attempt-$$"
-  local user="smoke-user-$attempt"
 
   log "seeding event (capacity=$CAPACITY)"
   local event_id
@@ -63,7 +67,7 @@ run_saga() {
   res_body=$(curl -fsS -X POST "$GATEWAY_URL/v1/reservations" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $idem_seed-reserve" \
-    -H "X-User-Id: $user" \
+    -H "Authorization: Bearer $SMOKE_TOKEN" \
     -d "{\"event_id\":\"$event_id\",\"quantity\":$QUANTITY}")
   res_id=$(printf '%s' "$res_body" | json_field "['reservation_id']")
   [[ -n "$res_id" ]] || fail "no reservation_id in response: $res_body"
@@ -78,7 +82,7 @@ run_saga() {
   curl -fsS -X POST "$GATEWAY_URL/v1/reservations/$res_id/payment" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $idem_seed-pay" \
-    -H "X-User-Id: $user" \
+    -H "Authorization: Bearer $SMOKE_TOKEN" \
     -d '{"payment_method_token":"tok-smoke"}' >/dev/null \
     || fail "payment submit for $res_id failed"
 

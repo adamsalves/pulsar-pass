@@ -40,10 +40,16 @@ func (b *captureBus) last(subject string) (eventbus.Message, bool) {
 	return eventbus.Message{}, false
 }
 
+const (
+	testToken  = "test-token-user-1"
+	testToken2 = "test-token-user-2"
+)
+
 func newTestServer(t *testing.T) (*httptest.Server, *captureBus) {
 	t.Helper()
 	bus := &captureBus{}
-	api := httptest.NewServer(gateway.Routes(gateway.NewReservationHandler(bus, logger.New("test"), 8), logger.New("test")))
+	tokens := map[string]string{testToken: "user-1", testToken2: "user-2"}
+	api := httptest.NewServer(gateway.Routes(gateway.NewReservationHandler(bus, logger.New("test"), 8), logger.New("test"), tokens))
 	t.Cleanup(api.Close)
 	return api, bus
 }
@@ -70,42 +76,42 @@ func post(t *testing.T, api *httptest.Server, path string, headers map[string]st
 	return resp
 }
 
-func TestCreateRejectsMissingUserId(t *testing.T) {
+func TestCreateRejectsAnonymousCaller(t *testing.T) {
 	api, bus := newTestServer(t)
 
 	resp := post(t, api, "/v1/reservations", map[string]string{
 		"Idempotency-Key": "idem-1",
 	}, map[string]any{"event_id": "evt-1", "quantity": 1})
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (anonymous callers must not share the guest identity)", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (identity is established by the gateway, not claimed by the caller)", resp.StatusCode)
 	}
 	if n := len(bus.messages); n != 0 {
 		t.Errorf("commands published = %d, want 0", n)
 	}
 }
 
-func TestConfirmPaymentRejectsMissingUserId(t *testing.T) {
+func TestConfirmPaymentRejectsAnonymousCaller(t *testing.T) {
 	api, bus := newTestServer(t)
 
 	resp := post(t, api, "/v1/reservations/res-1/payment", map[string]string{
 		"Idempotency-Key": "idem-1",
 	}, map[string]any{"payment_method_token": "tok"})
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (payer identity must be explicit)", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (payer identity must be resolved by the gateway)", resp.StatusCode)
 	}
 	if n := len(bus.messages); n != 0 {
 		t.Errorf("commands published = %d, want 0", n)
 	}
 }
 
-func TestCreateAcceptsExplicitUser(t *testing.T) {
+func TestCreateAcceptsResolvedIdentity(t *testing.T) {
 	api, bus := newTestServer(t)
 
 	resp := post(t, api, "/v1/reservations", map[string]string{
 		"Idempotency-Key": "idem-1",
-		"X-User-Id":       "user-1",
+		"Authorization":   "Bearer " + testToken,
 	}, map[string]any{"event_id": "evt-1", "quantity": 1})
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -122,7 +128,8 @@ func TestCreateAcceptsExplicitUser(t *testing.T) {
 		t.Fatalf("unexpected response %+v", out)
 	}
 
-	// The command must carry the explicit user identity, never a fallback.
+	// The command must carry the token-resolved identity, never a
+	// client-claimed one.
 	msg, ok := bus.last(envelope.SubjectReservationReserve)
 	if !ok {
 		t.Fatal("no reservation.reserve command published")
@@ -138,12 +145,12 @@ func TestCreateAcceptsExplicitUser(t *testing.T) {
 	}
 }
 
-func TestConfirmPaymentAcceptsExplicitUser(t *testing.T) {
+func TestConfirmPaymentAcceptsResolvedIdentity(t *testing.T) {
 	api, bus := newTestServer(t)
 
 	resp := post(t, api, "/v1/reservations/res-1/payment", map[string]string{
 		"Idempotency-Key": "idem-1",
-		"X-User-Id":       "user-2",
+		"Authorization":   "Bearer " + testToken2,
 	}, map[string]any{"payment_method_token": "tok"})
 
 	if resp.StatusCode != http.StatusAccepted {

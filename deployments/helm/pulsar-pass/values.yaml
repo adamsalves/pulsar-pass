@@ -54,6 +54,10 @@ services:
     # Exposed to the host through the kind port mapping :8080 -> 30080.
     httpNodePort: 30080
     maxReservationQty: "8"
+    # Bearer-token table (cycle 8): token=user_id CSV pairs, shipped as
+    # a Secret and mounted as AUTH_TOKENS. The default mirrors the dev
+    # mapping the smoke script uses; override per environment.
+    authTokens: "pp-token-user-1=user-1,pp-token-user-2=user-2"
   core: {}
   chrono:
     sweepInterval: 5s
