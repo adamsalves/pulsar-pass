@@ -12,8 +12,13 @@ PAYMENT_DB   ?= postgres://pulsar:pulsar@localhost:5432/pulsar_payment?sslmode=d
 CAPACITY     ?= 1000
 EVENT_ID     ?=
 BASE_URL     ?= http://localhost:8080
+# Distinct identities for the load test (see load-auth-tokens): must
+# exceed the event CAPACITY — a reservation pins its user for the
+# event's lifetime (one PENDING or CONFIRMED reservation per user per
+# event), so LOAD_USERS >= 2x CAPACITY is a safe default.
+LOAD_USERS   ?= 2000
 
-.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-run load-verify cluster-up cluster-down deploy-infra deploy-services cluster-smoke release-check release-build release-snapshot clean
+.PHONY: all build run-gateway run-core run-chrono run-payment run-horizon vet fmt lint test test-cover tidy migrate-core-up migrate-core-down migrate-payment-up migrate-payment-down compose-up compose-down docker-build load-seed load-auth-tokens load-run load-verify cluster-up cluster-down deploy-infra deploy-services cluster-smoke release-check release-build release-snapshot clean
 
 all: lint build test
 
@@ -89,12 +94,21 @@ load-seed:
 	@docker compose -f deployments/docker-compose.yml exec -T postgres \
 		psql -U pulsar -d pulsar_core -q -tA -v capacity=$(CAPACITY) -f - < deployments/k6/seed.sql
 
+# Identity table for the load test (cycle 8): LOAD_USERS token=user
+# pairs in the AUTH_TOKENS format. Run the gateway and the k6 script
+# with the same string:
+#   AUTH_TOKENS="$$(make load-auth-tokens)" make run-gateway &
+#   make load-run EVENT_ID=$$EVENT_ID AUTH_TOKENS="$$(make load-auth-tokens)"
+load-auth-tokens:
+	@seq 1 $(LOAD_USERS) | awk '{printf "pp-load-token-%06d=load-user-%06d,", $$1, $$1}' | sed 's/,$$//'
+
 load-run:
 	@if [ -z "$(EVENT_ID)" ]; then echo "EVENT_ID is required (see make load-seed)"; exit 1; fi
+	@if [ -z "$(AUTH_TOKENS)" ]; then echo "AUTH_TOKENS is required (generate with: make load-auth-tokens)"; exit 1; fi
 	docker run --rm --network host \
 		-v $(CURDIR)/deployments/k6:/scripts:ro \
 		$(K6_IMAGE) run /scripts/flash-sale.js \
-		-e BASE_URL=$(BASE_URL) -e EVENT_ID=$(EVENT_ID)
+		-e BASE_URL=$(BASE_URL) -e EVENT_ID=$(EVENT_ID) -e AUTH_TOKENS="$(AUTH_TOKENS)"
 
 # Inventory invariants after a run; prints the violation count (0 = sound).
 load-verify:

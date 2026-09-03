@@ -30,7 +30,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := gateway.LoadConfig()
+	cfg, err := gateway.LoadConfig()
+	if err != nil {
+		return err
+	}
 	log := logger.New(cfg.Env)
 
 	metricsHandler, stopMetrics, err := metrics.Init(ctx, "pulsar-gateway")
@@ -45,7 +48,7 @@ func run() error {
 	}
 
 	handler := gateway.NewReservationHandler(bus, log, cfg.MaxQuantity)
-	apiServer := gateway.NewServer(cfg.HTTPAddr, gateway.Routes(handler, log))
+	apiServer := gateway.NewServer(cfg.HTTPAddr, gateway.Routes(handler, log, cfg.AuthTokens))
 	healthServer := health.NewServer(cfg.HealthAddr, log)
 	healthServer.SetVersion(version.Version)
 	healthServer.SetReady(true)

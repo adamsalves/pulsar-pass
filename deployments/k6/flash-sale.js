@@ -56,8 +56,28 @@ function randHex(n) {
   return s;
 }
 
+// Identity: the gateway resolves user ids from bearer tokens (cycle 8).
+// AUTH_TOKENS is the same CSV the gateway runs with — generate a load
+// table with `make load-auth-tokens LOAD_USERS=2000` and pass it to
+// both the gateway process and this script. A reservation pins its
+// user for the whole event lifetime (unique index: one PENDING or
+// CONFIRMED reservation per user per event), so the table must be
+// larger than the event capacity (LOAD_USERS >= 2x CAPACITY is a safe
+// default).
+const credentials = (__ENV.AUTH_TOKENS || '')
+  .split(',')
+  .map((pair) => pair.trim().split('='))
+  .filter((parts) => parts.length === 2 && parts[0] && parts[1])
+  .map(([token, user]) => ({ token, user }));
+if (credentials.length === 0) {
+  throw new Error('AUTH_TOKENS is required: generate a load table with `make load-auth-tokens` and pass it to the gateway and to this script');
+}
+
 export default function () {
-  const user = 'load-' + randHex(12);
+  // A random identity per iteration: identities are fungible for the
+  // load profile — each one owns whatever reservation it just created
+  // and pays with the same token (same identity, so no impostor noise).
+  const cred = credentials[Math.floor(Math.random() * credentials.length)];
   const res = http.post(
     `${BASE_URL}/v1/reservations`,
     JSON.stringify({ event_id: EVENT_ID, quantity: QUANTITY }),
@@ -65,7 +85,7 @@ export default function () {
       headers: {
         'Content-Type': 'application/json',
         'Idempotency-Key': 'load-res-' + randHex(16),
-        'X-User-Id': user,
+        Authorization: 'Bearer ' + cred.token,
       },
     },
   );
@@ -84,7 +104,7 @@ export default function () {
         headers: {
           'Content-Type': 'application/json',
           'Idempotency-Key': 'load-pay-' + randHex(16),
-          'X-User-Id': user,
+          Authorization: 'Bearer ' + cred.token,
         },
       },
     );

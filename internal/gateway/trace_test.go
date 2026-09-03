@@ -29,7 +29,7 @@ func TestTracingMiddlewareOpensServerSpan(t *testing.T) {
 	api, _ := newTestServer(t)
 	resp := post(t, api, "/v1/reservations", map[string]string{
 		"Idempotency-Key": "idem-trace",
-		"X-User-Id":       "user-trace",
+		"Authorization":   "Bearer " + testToken,
 		"X-Request-Id":    "req-trace-1",
 	}, map[string]any{"event_id": "evt-1", "quantity": 1})
 	if resp.StatusCode != http.StatusAccepted {

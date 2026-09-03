@@ -13,7 +13,7 @@ func TestSagaSuccessPath(t *testing.T) {
 	h := boot(t)
 	eventID := h.seedEvent(t, 5)
 
-	reservationID, owner := h.createReservation(t, eventID, 2)
+	reservationID, ownerToken := h.createReservation(t, eventID, 2)
 
 	waitFor(t, "reservation PENDING", func() bool {
 		return h.reservationStatus(t, reservationID) == "PENDING"
@@ -24,7 +24,7 @@ func TestSagaSuccessPath(t *testing.T) {
 	})
 	waitFor(t, "redis hold recorded", func() bool { return h.holdExists(reservationID) })
 
-	h.payReservation(t, owner, reservationID, "tok-ok")
+	h.payReservation(t, ownerToken, reservationID, "tok-ok")
 
 	waitFor(t, "reservation CONFIRMED", func() bool {
 		return h.reservationStatus(t, reservationID) == "CONFIRMED"
@@ -48,7 +48,7 @@ func TestSagaPaymentDeclined(t *testing.T) {
 	h := boot(t)
 	eventID := h.seedEvent(t, 5)
 
-	reservationID, owner := h.createReservation(t, eventID, 1)
+	reservationID, ownerToken := h.createReservation(t, eventID, 1)
 
 	waitFor(t, "reservation PENDING", func() bool {
 		return h.reservationStatus(t, reservationID) == "PENDING"
@@ -58,7 +58,7 @@ func TestSagaPaymentDeclined(t *testing.T) {
 		return ok
 	})
 
-	h.payReservation(t, owner, reservationID, "fail-me")
+	h.payReservation(t, ownerToken, reservationID, "fail-me")
 
 	waitFor(t, "reservation FAILED", func() bool {
 		return h.reservationStatus(t, reservationID) == "FAILED"
@@ -81,7 +81,7 @@ func TestSagaExpirationTTL(t *testing.T) {
 	h := bootTTL(t, expirationTTL)
 	eventID := h.seedEvent(t, 5)
 
-	reservationID, owner := h.createReservation(t, eventID, 1)
+	reservationID, ownerToken := h.createReservation(t, eventID, 1)
 
 	waitFor(t, "reservation PENDING", func() bool {
 		return h.reservationStatus(t, reservationID) == "PENDING"
@@ -98,7 +98,7 @@ func TestSagaExpirationTTL(t *testing.T) {
 	waitFor(t, "redis hold cleaned by sweeper", func() bool { return !h.holdExists(reservationID) })
 	// A payment submitted after expiry must be rejected by the window
 	// check, not charged.
-	h.payReservation(t, owner, reservationID, "tok-ok")
+	h.payReservation(t, ownerToken, reservationID, "tok-ok")
 	waitFor(t, "late payment rejected", func() bool {
 		return h.paymentStatus(t, reservationID) == "FAILED"
 	})
@@ -117,7 +117,7 @@ func TestSagaPaymentByNonOwnerRejected(t *testing.T) {
 	h := boot(t)
 	eventID := h.seedEvent(t, 5)
 
-	reservationID, owner := h.createReservation(t, eventID, 1)
+	reservationID, ownerToken := h.createReservation(t, eventID, 1)
 
 	waitFor(t, "reservation PENDING", func() bool {
 		return h.reservationStatus(t, reservationID) == "PENDING"
@@ -127,8 +127,9 @@ func TestSagaPaymentByNonOwnerRejected(t *testing.T) {
 		return ok
 	})
 
-	// An impostor submits the payment for someone else's reservation.
-	h.payReservation(t, "user-impostor", reservationID, "tok-ok")
+	// An impostor — a different but equally valid identity — submits the
+	// payment for someone else's reservation.
+	h.payReservation(t, h.otherToken(t, ownerToken), reservationID, "tok-ok")
 
 	// Give the processor time to consume and reject the command; then
 	// verify nothing changed: no payment row, seat still held for the
@@ -149,7 +150,7 @@ func TestSagaPaymentByNonOwnerRejected(t *testing.T) {
 	}
 
 	// The rightful owner is still able to pay.
-	h.payReservation(t, owner, reservationID, "tok-ok")
+	h.payReservation(t, ownerToken, reservationID, "tok-ok")
 	waitFor(t, "reservation CONFIRMED by owner", func() bool {
 		return h.reservationStatus(t, reservationID) == "CONFIRMED"
 	})

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -58,7 +59,12 @@ type harness struct {
 	bus      *eventbus.JetStream
 	holds    *holds.Store
 	api      *httptest.Server
+	tokens   map[string]string
 }
+
+// e2eIdentityCount sizes the bearer-token table: enough identities that
+// the scenario suite (including the impostor case) never shares one.
+const e2eIdentityCount = 8
 
 func boot(t *testing.T) *harness {
 	t.Helper()
@@ -129,15 +135,49 @@ func bootTTL(t *testing.T, ttl time.Duration) *harness {
 	sweeper := chrono.NewSweeper(chronoadapter.NewSource(corePool), bus, holdStore, log, sweepInterval, 100)
 	go sweeper.Run(ctx)
 
-	// pulsar-gateway: the HTTP ingress under test.
-	api := httptest.NewServer(gateway.Routes(gateway.NewReservationHandler(bus, log, 8), log))
+	// pulsar-gateway: the HTTP ingress under test, with its bearer
+	// token table — identities are resolved by the gateway, mirroring
+	// the AUTH_TOKENS contract of the production binary.
+	tokens := make(map[string]string, e2eIdentityCount)
+	for i := range e2eIdentityCount {
+		tokens[fmt.Sprintf("e2e-token-%d", i)] = fmt.Sprintf("user-e2e-%d", i)
+	}
+	api := httptest.NewServer(gateway.Routes(gateway.NewReservationHandler(bus, log, 8), log, tokens))
 	t.Cleanup(api.Close)
 
 	// Registered last so it runs first on cleanup: background loops
 	// must stop before pools and the broker are torn down.
 	t.Cleanup(cancel)
 
-	return &harness{corePool: corePool, payPool: payPool, bus: bus, holds: holdStore, api: api}
+	return &harness{corePool: corePool, payPool: payPool, bus: bus, holds: holdStore, api: api, tokens: tokens}
+}
+
+// randomToken picks any token from the table: the scenario suite never
+// asserts on a specific identity, only on ownership consistency.
+func (h *harness) randomToken(t *testing.T) string {
+	t.Helper()
+	i := rand.IntN(len(h.tokens))
+	for tok := range h.tokens {
+		if i == 0 {
+			return tok
+		}
+		i--
+	}
+	t.Fatal("token table is empty")
+	return ""
+}
+
+// otherToken returns a token different from the given one, for the
+// impostor scenario.
+func (h *harness) otherToken(t *testing.T, not string) string {
+	t.Helper()
+	for tok := range h.tokens {
+		if tok != not {
+			return tok
+		}
+	}
+	t.Fatal("token table too small for the impostor scenario")
+	return ""
 }
 
 func startDatabases(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
@@ -269,12 +309,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timeout waiting for %s", what)
 }
 
-// createReservation drives POST /v1/reservations and returns the
-// reservation id the gateway handed back together with the owner
-// identity that must pay for it.
-func (h *harness) createReservation(t *testing.T, eventID string, quantity int) (reservationID, userID string) {
+// createReservation drives POST /v1/reservations with a random
+// identity from the token table and returns the reservation id the
+// gateway handed back together with the owner's bearer token.
+func (h *harness) createReservation(t *testing.T, eventID string, quantity int) (reservationID, ownerToken string) {
 	t.Helper()
-	userID = "user-" + uid.New()
+	ownerToken = h.randomToken(t)
 	body, err := json.Marshal(map[string]any{"event_id": eventID, "quantity": quantity})
 	if err != nil {
 		t.Fatalf("marshal create body: %v", err)
@@ -285,7 +325,7 @@ func (h *harness) createReservation(t *testing.T, eventID string, quantity int) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uid.New())
-	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
 
 	resp, err := h.api.Client().Do(req)
 	if err != nil {
@@ -305,13 +345,13 @@ func (h *harness) createReservation(t *testing.T, eventID string, quantity int) 
 	if out.Status != "accepted" || out.ReservationID == "" {
 		t.Fatalf("unexpected create response %+v", out)
 	}
-	return out.ReservationID, userID
+	return out.ReservationID, ownerToken
 }
 
-// payReservation drives POST /v1/reservations/{id}/payment as the
-// given user, who is expected to be the reservation owner unless the
+// payReservation drives POST /v1/reservations/{id}/payment with the
+// given bearer token, expected to be the reservation owner's unless the
 // test is exercising an impostor attempt.
-func (h *harness) payReservation(t *testing.T, userID, reservationID, token string) {
+func (h *harness) payReservation(t *testing.T, ownerToken, reservationID, token string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"payment_method_token": token})
 	if err != nil {
@@ -323,7 +363,7 @@ func (h *harness) payReservation(t *testing.T, userID, reservationID, token stri
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uid.New())
-	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
 
 	resp, err := h.api.Client().Do(req)
 	if err != nil {
