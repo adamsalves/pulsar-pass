@@ -236,6 +236,12 @@ func (p *Processor) waitContext(ctx context.Context, reservationID string) (Rese
 	)
 	for attempt := 0; attempt < p.contextWaitAttempts; attempt++ {
 		if sleepErr := p.sleeper(ctx, p.contextWaitDelay); sleepErr != nil {
+			// The sentinel goes back so the broker redelivers; the
+			// sleep error itself (shutdown) is diagnosability only.
+			p.log.Debug("context wait aborted before the projection landed",
+				"reservation_id", reservationID,
+				"error", sleepErr,
+			)
 			return ReservationContext{}, err
 		}
 		ctxData, retryErr := p.contexts.Get(ctx, reservationID)
