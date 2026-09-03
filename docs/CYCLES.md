@@ -447,7 +447,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** fechar o roadmap (item 8, #23/#45): a identidade passa a ser **verificada** — o gateway resolve `user_id` de `Authorization: Bearer <token>` numa tabela de tokens e o `X-User-Id` client-supplied deixa de existir. A posse do payment (#15/#19) permanece idêntica, agora contra identidade que o chamador não escolheu.
 
-**Commits:** `772a6e8` → `<hash-final>` (PR #53)
+**Commits:** `772a6e8` → `c0cd2a2` (PR #53)
 
 ### Entregas
 
