@@ -93,7 +93,7 @@ docs/                 # blueprint de arquitetura, diário de ciclos e diagramas
 
 - **Go 1.24+** — build e testes.
 - **Docker + Docker Compose** — infra local e suíte e2e (testcontainers).
-- **[golang-migrate](https://github.com/golang-migrate/migrate)** — aplica as migrations (alternativa manual no quickstart abaixo).
+- **[golang-migrate](https://github.com/golang-migrate/migrate)** — aplica as migrations (alvos `make migrate-*-up/down`).
 - **k6** — só para a prova de carga (roda em container pelo Makefile).
 - **kind + kubectl + helm** — só para o deploy em cluster.
 
@@ -112,7 +112,7 @@ make migrate-payment-up
 make load-seed CAPACITY=100
 
 # 4. Subir os cinco serviços (cada um em um terminal, ou com &)
-make build
+#    (`make run-*` compila via `go run` — não precisa de build prévio)
 make run-horizon &   # relay do outbox → JetStream
 make run-core &      # estoque + máquina de estados
 make run-payment &   # acquirer simulado
@@ -228,7 +228,6 @@ Perfil de referência: 300 VUs de pico, ramp 2min + platô 3min + ramp-down 1min
 
 ```bash
 make compose-up && make migrate-core-up && make migrate-payment-up
-make build
 
 # recomendado sob carga: acquirer rápido e relay folgado
 SIMULATED_CHARGE_DELAY=1ms make run-payment &
