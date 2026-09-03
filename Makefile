@@ -84,7 +84,8 @@ docker-build:
 	done
 
 # Load test: compose-up + the five `make run-*` services must be up.
-# load-seed prints the EVENT_ID; pass it back to load-run.load-seed:
+# load-seed prints the EVENT_ID; pass it back to load-run.
+load-seed:
 	@docker compose -f deployments/docker-compose.yml exec -T postgres \
 		psql -U pulsar -d pulsar_core -q -tA -v capacity=$(CAPACITY) -f - < deployments/k6/seed.sql
 

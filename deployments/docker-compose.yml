@@ -30,7 +30,9 @@ services:
       retries: 10
 
   nats:
-    image: nats:2.11-alpine
+    # 2.12 aligns with the k8s cluster and the nats-server module pinned
+    # in go.mod (dependencyabot preserves the pin).
+    image: nats:2.12-alpine
     # -m 8222 enables the monitor port: without it the /healthz
     # healthcheck below could never succeed (it was silently failing).
     command: ["-js", "-sd", "/data", "-m", "8222"]
