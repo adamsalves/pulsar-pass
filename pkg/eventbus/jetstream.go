@@ -55,10 +55,14 @@ type JetStreamConfig struct {
 // durable pull consumers and exhausted deliveries surface as DLQ
 // advisories.
 type JetStream struct {
-	nc      *nats.Conn
-	js      jetstream.JetStream
-	log     *slog.Logger
-	cfg     JetStreamConfig
+	nc  *nats.Conn
+	js  jetstream.JetStream
+	log *slog.Logger
+	cfg JetStreamConfig
+	// ctx is the loop context: Close cancels it, which both unwinds the
+	// fetch loops and cancels the context handed to in-flight handlers
+	// (an inline wait aborts instead of parking Close for its budget).
+	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	closeMu sync.Mutex
@@ -122,7 +126,7 @@ func ConnectJetStream(ctx context.Context, cfg JetStreamConfig, log *slog.Logger
 	}
 
 	loopCtx, cancel := context.WithCancel(context.Background())
-	j := &JetStream{nc: nc, js: js, log: log, cfg: cfg, cancel: cancel}
+	j := &JetStream{nc: nc, js: js, log: log, cfg: cfg, ctx: loopCtx, cancel: cancel}
 	j.wg.Add(1)
 	go j.listenDLQ(loopCtx)
 	return j, nil
@@ -176,11 +180,15 @@ func (j *JetStream) Subscribe(subject, queue string, handler Handler) error {
 	}
 	j.ownConsumer(queue)
 	j.wg.Add(1)
-	go j.consumeLoop(cons, queue, handler)
+	go j.consumeLoop(j.ctx, cons, queue, handler)
 	return nil
 }
 
-// Close stops the fetch loops and drains the connection.
+// Close stops the fetch loops, cancels the context of in-flight
+// handlers and drains the connection. A handler parked in an inline
+// wait aborts and returns its command to the broker for paced
+// redelivery, so Close is bounded by the handler's unwind, not by the
+// wait budget.
 func (j *JetStream) Close(_ context.Context) error {
 	j.closeMu.Lock()
 	if j.closed {
@@ -195,7 +203,7 @@ func (j *JetStream) Close(_ context.Context) error {
 	return j.nc.Drain()
 }
 
-func (j *JetStream) consumeLoop(cons jetstream.Consumer, name string, handler Handler) {
+func (j *JetStream) consumeLoop(ctx context.Context, cons jetstream.Consumer, name string, handler Handler) {
 	defer j.wg.Done()
 	for {
 		if j.isClosed() {
@@ -208,12 +216,12 @@ func (j *JetStream) consumeLoop(cons jetstream.Consumer, name string, handler Ha
 			continue
 		}
 		for msg := range batch.Messages() {
-			j.handle(msg, name, handler)
+			j.handle(ctx, msg, name, handler)
 		}
 	}
 }
 
-func (j *JetStream) handle(msg jetstream.Msg, consumer string, handler Handler) {
+func (j *JetStream) handle(ctx context.Context, msg jetstream.Msg, consumer string, handler Handler) {
 	headers := make(map[string]string, len(msg.Headers()))
 	for k := range msg.Headers() {
 		headers[k] = msg.Headers().Get(k)
@@ -224,7 +232,10 @@ func (j *JetStream) handle(msg jetstream.Msg, consumer string, handler Handler) 
 		Payload: msg.Data(),
 		Headers: headers,
 	}
-	cctx, span := consumeSpan(context.Background(), &m)
+	// The handler context derives from the loop context: Close cancels
+	// both, so shutdown unwinds in-flight handlers instead of letting
+	// them park Close for the remainder of an inline wait or charge.
+	cctx, span := consumeSpan(ctx, &m)
 	err := handler(cctx, m)
 	if err != nil {
 		span.RecordError(err)

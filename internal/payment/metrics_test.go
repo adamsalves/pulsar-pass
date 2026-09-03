@@ -67,6 +67,15 @@ func TestChargeOutcomeClassification(t *testing.T) {
 	if !errors.Is(err, payment.ErrContextNotFound) {
 		t.Fatalf("exhausted wait Handle() error = %v, want ErrContextNotFound", err)
 	}
+	// Shutdown mid-wait: the aborted wait is counted in its own class —
+	// it is neither resolved nor a budget exhaustion.
+	waitAborted := &flakyContexts{fakeContexts: newFakeContexts(), misses: 99}
+	abortedSleep := func(context.Context, time.Duration) error { return context.Canceled }
+	err = payment.NewProcessor(newFakePayments(), waitAborted, &fakeOutbox{}, &fakeTx{}, &fakeAcquirer{}, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(abortedSleep)).
+		Handle(ctx, payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-wait-aborted")
+	if !errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("aborted wait Handle() error = %v, want ErrContextNotFound", err)
+	}
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -81,6 +90,7 @@ func TestChargeOutcomeClassification(t *testing.T) {
 		"pulsar_payment_context_waits_total",
 		`outcome="resolved"`,
 		`outcome="exhausted"`,
+		`outcome="aborted"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q:\n%s", want, body)

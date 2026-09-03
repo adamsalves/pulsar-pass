@@ -77,7 +77,8 @@ func (m *contextWaitMetrics) counter() (api.Int64Counter, error) {
 
 // recordContextWait classifies an inline wait: resolved when the
 // projection landed during the wait, exhausted when the budget ran out
-// and the retryable error went back to the broker. Waits that never
+// and the retryable error went back to the broker, aborted when the
+// wait was cut short by cancellation (shutdown). Waits that never
 // started (projection already present) are not counted.
 func recordContextWait(outcome string) {
 	counter, err := waitMetrics.counter()
