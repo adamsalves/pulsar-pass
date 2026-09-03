@@ -343,7 +343,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 
 **Objetivo:** fechar o roadmap item 6 — deploy da stack completa num cluster kind com observabilidade in-cluster — e o hardening que a réplica expõe: corrida pagamento × projeção (perda silenciosa sob pico) e multiplicação da métrica de DLQ entre réplicas. Hardening primeiro, deploy em camadas (infra → serviços → smoke/CI), cada etapa verificada no cluster real.
 
-**Commits:** `dde904d` → `<hash-final>` (PRs #37, #40, #41, #43, #44)
+**Commits:** `dde904d` → `1494838` (PRs #37, #40, #41, #43, #44, #46)
 
 ### Entregas
 
