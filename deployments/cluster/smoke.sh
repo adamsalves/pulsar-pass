@@ -129,15 +129,26 @@ done
 # --- observability ----------------------------------------------------------
 log "checking Prometheus targets"
 # min over all pulsar-* targets: 1 = everything up, 0 = something down,
-# no series = no targets at all. Both non-1 outcomes fail.
-minup=$(curl -fsS -G "$PROM_URL/api/v1/query" \
-  --data-urlencode 'query=min(up{job=~"pulsar-.*"})' \
-  | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || echo none)
-[[ "$minup" == "1" ]] || fail "Prometheus pulsar-* targets not all up (min up=$minup)"
+# no series = targets registered but not scraped yet (fresh clusters:
+# first scrape happens within the scrape interval). Poll until the
+# series materializes instead of failing on the race.
+minup=""
+for _ in $(seq 1 18); do
+  minup=$(curl -fsS -G "$PROM_URL/api/v1/query" \
+    --data-urlencode 'query=min(up{job=~"pulsar-.*"})' \
+    | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || true)
+  [[ "$minup" == "1" ]] && break
+  sleep 5
+done
+[[ "$minup" == "1" ]] || fail "Prometheus pulsar-* targets not all up (min up=${minup:-none})"
 
 log "checking Jaeger trace"
-sleep 3
-traces=$(curl -fsS "$JAEGER_URL/api/traces?service=pulsar-gateway&limit=1&lookback=1h" | json_field "['data']")
+traces="[]"
+for _ in $(seq 1 6); do
+  sleep 5
+  traces=$(curl -fsS "$JAEGER_URL/api/traces?service=pulsar-gateway&limit=1&lookback=1h" | json_field "['data']" 2>/dev/null || echo "[]")
+  [[ "$traces" != "[]" ]] && break
+done
 [[ "$traces" != "[]" ]] || fail "no pulsar-gateway trace found in Jaeger"
 
 log "ALL CHECKS PASSED"
