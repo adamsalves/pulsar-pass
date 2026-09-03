@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/adamsalves/pulsar-pass/pkg/envelope"
 	"github.com/adamsalves/pulsar-pass/pkg/uid"
@@ -16,8 +17,9 @@ import (
 var ErrNotWired = errors.New("payment processor is not wired")
 
 // ErrContextNotFound is returned when the payment command arrives before
-// the ticket.reserved projection. It is retryable: the broker redelivers
-// until the projection lands.
+// the ticket.reserved projection. It is retryable: the processor waits
+// for the projection inline for a bounded budget and, if it still does
+// not land, returns the error so the broker redelivers with pacing.
 var ErrContextNotFound = errors.New("reservation context not found")
 
 // ErrDuplicatePayment is returned by the repository when a payment with
@@ -48,6 +50,45 @@ type PaymentRequested struct {
 	Token         string `json:"payment_method_token"`
 }
 
+// Inline wait budget for the reservation context: a payment command can
+// legitimately race ticket.reserved through the outbox relay (the user
+// paying immediately after reserving). Instead of burning the broker's
+// redelivery budget on a race that resolves in milliseconds, the
+// processor re-reads the projection inline before handing the retryable
+// error back for paced redelivery.
+const (
+	defaultContextWaitAttempts = 3
+	defaultContextWaitDelay    = 500 * time.Millisecond
+)
+
+// Option customizes the processor (tests, tooling). The zero value
+// keeps production defaults.
+type Option func(*Processor)
+
+// WithSleeper replaces the wait between context re-reads. The default
+// honors context cancellation (shutdown aborts the wait); tests inject
+// an immediate return to stay deterministic under the race detector.
+func WithSleeper(sleep func(ctx context.Context, d time.Duration) error) Option {
+	return func(p *Processor) {
+		if sleep != nil {
+			p.sleeper = sleep
+		}
+	}
+}
+
+// WithContextWait overrides the inline wait budget (attempts × delay).
+// Non-positive values keep the defaults.
+func WithContextWait(attempts int, delay time.Duration) Option {
+	return func(p *Processor) {
+		if attempts > 0 {
+			p.contextWaitAttempts = attempts
+		}
+		if delay > 0 {
+			p.contextWaitDelay = delay
+		}
+	}
+}
+
 // PaymentOutcomePayload is published after the charge attempt.
 type PaymentOutcomePayload struct {
 	ReservationID string `json:"reservation_id"`
@@ -62,14 +103,17 @@ type PaymentOutcomePayload struct {
 // (status + outbox) commit atomically, and redelivered commands resume
 // from the stored payment instead of charging again.
 type Processor struct {
-	payments PaymentRepository
-	contexts ReservationContextRepository
-	outbox   OutboxRepository
-	tx       TxRunner
-	acquirer Acquirer
-	clock    Clock
-	log      *slog.Logger
-	source   string
+	payments            PaymentRepository
+	contexts            ReservationContextRepository
+	outbox              OutboxRepository
+	tx                  TxRunner
+	acquirer            Acquirer
+	clock               Clock
+	log                 *slog.Logger
+	source              string
+	sleeper             func(ctx context.Context, d time.Duration) error
+	contextWaitAttempts int
+	contextWaitDelay    time.Duration
 }
 
 // NewProcessor wires the payment use case. tx is optional: when nil,
@@ -82,16 +126,37 @@ func NewProcessor(
 	acquirer Acquirer,
 	clock Clock,
 	log *slog.Logger,
+	opts ...Option,
 ) *Processor {
-	return &Processor{
-		payments: payments,
-		contexts: contexts,
-		outbox:   outbox,
-		tx:       tx,
-		acquirer: acquirer,
-		clock:    clock,
-		log:      log,
-		source:   "pulsar-payment",
+	p := &Processor{
+		payments:            payments,
+		contexts:            contexts,
+		outbox:              outbox,
+		tx:                  tx,
+		acquirer:            acquirer,
+		clock:               clock,
+		log:                 log,
+		source:              "pulsar-payment",
+		sleeper:             sleepFor,
+		contextWaitAttempts: defaultContextWaitAttempts,
+		contextWaitDelay:    defaultContextWaitDelay,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// sleepFor waits d, aborting as soon as ctx is done — a shutdown must
+// not park a consumer for the remainder of the wait budget.
+func sleepFor(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -104,7 +169,7 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 		return errors.New("reservation_id, user_id and idempotency key are required")
 	}
 
-	ctxData, err := p.contexts.Get(ctx, req.ReservationID)
+	ctxData, err := p.waitContext(ctx, req.ReservationID)
 	if err != nil {
 		return fmt.Errorf("load reservation context: %w", err)
 	}
@@ -153,6 +218,48 @@ func (p *Processor) Handle(ctx context.Context, req PaymentRequested, idempotenc
 		return p.finish(ctx, pay, "", chargeErr.Error(), false)
 	}
 	return p.finish(ctx, pay, charge.GatewayRef, "", true)
+}
+
+// waitContext reads the reservation context, tolerating the race with
+// the ticket.reserved projection: when the command beats the outbox
+// relay, the projection is re-read up to contextWaitAttempts times
+// inline before the retryable sentinel goes back to the broker for
+// paced redelivery. Cancellation (shutdown) aborts the wait and keeps
+// the retryable semantics — the command is simply redelivered later.
+func (p *Processor) waitContext(ctx context.Context, reservationID string) (ReservationContext, error) {
+	ctxData, err := p.contexts.Get(ctx, reservationID)
+	if !errors.Is(err, ErrContextNotFound) {
+		return ctxData, err
+	}
+	p.log.Info("payment raced the reservation projection; waiting inline",
+		"reservation_id", reservationID,
+	)
+	for attempt := 0; attempt < p.contextWaitAttempts; attempt++ {
+		if sleepErr := p.sleeper(ctx, p.contextWaitDelay); sleepErr != nil {
+			// The sentinel goes back so the broker redelivers; the
+			// sleep error itself (shutdown) is diagnosability only.
+			p.log.Debug("context wait aborted before the projection landed",
+				"reservation_id", reservationID,
+				"error", sleepErr,
+			)
+			return ReservationContext{}, err
+		}
+		ctxData, retryErr := p.contexts.Get(ctx, reservationID)
+		if errors.Is(retryErr, ErrContextNotFound) {
+			continue
+		}
+		if retryErr != nil {
+			return ReservationContext{}, retryErr
+		}
+		recordContextWait("resolved")
+		return ctxData, nil
+	}
+	recordContextWait("exhausted")
+	p.log.Warn("reservation context did not land within the inline wait; returning to broker",
+		"reservation_id", reservationID,
+		"attempts", p.contextWaitAttempts,
+	)
+	return ReservationContext{}, err
 }
 
 // loadOrCreate persists a fresh payment attempt or, for redelivered

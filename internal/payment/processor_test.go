@@ -90,6 +90,43 @@ func (f *fakeContexts) Get(_ context.Context, reservationID string) (payment.Res
 	return rc, nil
 }
 
+// flakyContexts fails the first N Gets with ErrContextNotFound — the
+// signature of a payment command racing the ticket.reserved projection
+// through the outbox relay.
+type flakyContexts struct {
+	*fakeContexts
+	misses   int
+	getCalls int
+}
+
+func (f *flakyContexts) Get(ctx context.Context, reservationID string) (payment.ReservationContext, error) {
+	f.getCalls++
+	if f.misses > 0 {
+		f.misses--
+		return payment.ReservationContext{}, payment.ErrContextNotFound
+	}
+	return f.fakeContexts.Get(ctx, reservationID)
+}
+
+// errContexts always fails with an infrastructure error, exercising the
+// non-retryable branch of the context wait.
+type errContexts struct{ err error }
+
+func (f *errContexts) Upsert(_ context.Context, _ payment.ReservationContext) error { return f.err }
+
+func (f *errContexts) Get(_ context.Context, _ string) (payment.ReservationContext, error) {
+	return payment.ReservationContext{}, f.err
+}
+
+// countingSleeper replaces the default wait with an immediate return,
+// counting the calls so budgets are asserted without real time.
+type countingSleeper struct{ calls int }
+
+func (s *countingSleeper) sleep(_ context.Context, _ time.Duration) error {
+	s.calls++
+	return nil
+}
+
 type fakeOutbox struct{ records []payment.OutboxRecord }
 
 func (f *fakeOutbox) Enqueue(_ context.Context, records ...payment.OutboxRecord) error {
@@ -307,6 +344,115 @@ func TestHandleMissingUserRejected(t *testing.T) {
 	// defaulting would silently charge whoever the projection names.
 	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", Token: "tok"}, "idem-1"); err == nil {
 		t.Fatal("Handle() error = nil, want rejection for missing user_id")
+	}
+	if acquirer.calls != 0 {
+		t.Errorf("acquirer called %d times, want 0", acquirer.calls)
+	}
+}
+
+func TestHandleContextWaitResolvesAfterProjectionLands(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	outbox := &fakeOutbox{}
+	acquirer := &fakeAcquirer{ref: "sim-wait"}
+	inner := newFakeContexts(testContext("res-1", now.Add(5*time.Minute)))
+	contexts := &flakyContexts{fakeContexts: inner, misses: 2}
+	sleeper := &countingSleeper{}
+	svc := payment.NewProcessor(newFakePayments(), contexts, outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(sleeper.sleep))
+
+	// The projection lands on the third read: the charge proceeds
+	// instead of the error going back to the broker.
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1"); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if acquirer.calls != 1 {
+		t.Errorf("acquirer calls = %d, want 1 (wait resolved the race inline)", acquirer.calls)
+	}
+	if len(outbox.records) != 1 || outbox.records[0].EventType != envelope.TypePaymentSucceeded {
+		t.Fatalf("outbox = %+v, want payment.succeeded", outbox.records)
+	}
+	if contexts.getCalls != 3 {
+		t.Errorf("context reads = %d, want 3 (initial + 2 waits)", contexts.getCalls)
+	}
+	if sleeper.calls != 2 {
+		t.Errorf("sleeper calls = %d, want 2", sleeper.calls)
+	}
+}
+
+func TestHandleContextWaitExhaustsBudgetAndStaysRetryable(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	acquirer := &fakeAcquirer{}
+	outbox := &fakeOutbox{}
+	contexts := &flakyContexts{fakeContexts: newFakeContexts(), misses: 99}
+	sleeper := &countingSleeper{}
+	svc := payment.NewProcessor(newFakePayments(), contexts, outbox, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(sleeper.sleep))
+
+	err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-1")
+	if !errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("error = %v, want ErrContextNotFound (retryable, broker redelivers)", err)
+	}
+	if acquirer.calls != 0 {
+		t.Errorf("acquirer called %d times, want 0", acquirer.calls)
+	}
+	if len(outbox.records) != 0 {
+		t.Errorf("outbox records = %d, want 0", len(outbox.records))
+	}
+	// Bounded budget: 3 waits × 500ms by default — exactly 1.5s inline,
+	// leaving the pacing window of the broker as the outer bound.
+	if contexts.getCalls != 4 {
+		t.Errorf("context reads = %d, want 4 (initial + default 3 attempts)", contexts.getCalls)
+	}
+	if sleeper.calls != 3 {
+		t.Errorf("sleeper calls = %d, want 3", sleeper.calls)
+	}
+}
+
+func TestHandleContextWaitHonorsCustomBudget(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	acquirer := &fakeAcquirer{}
+	contexts := &flakyContexts{fakeContexts: newFakeContexts(), misses: 99}
+	sleeper := &countingSleeper{}
+	svc := payment.NewProcessor(newFakePayments(), contexts, &fakeOutbox{}, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default(),
+		payment.WithSleeper(sleeper.sleep), payment.WithContextWait(1, 100*time.Millisecond))
+
+	if err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-1"); !errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("error = %v, want ErrContextNotFound", err)
+	}
+	if sleeper.calls != 1 || contexts.getCalls != 2 {
+		t.Errorf("budget = %d sleeps / %d reads, want 1 sleep / 2 reads", sleeper.calls, contexts.getCalls)
+	}
+}
+
+func TestHandleContextWaitOtherErrorsAreNotRetryable(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	acquirer := &fakeAcquirer{}
+	sleeper := &countingSleeper{}
+	svc := payment.NewProcessor(newFakePayments(), &errContexts{err: errors.New("connection refused")}, &fakeOutbox{}, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default(), payment.WithSleeper(sleeper.sleep))
+
+	err := svc.Handle(context.Background(), payment.PaymentRequested{ReservationID: "res-1", UserID: "user-1", Token: "tok"}, "idem-1")
+	if err == nil || errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("error = %v, want the infrastructure error (not the context sentinel)", err)
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error = %v, want the repository error wrapped", err)
+	}
+	if sleeper.calls != 0 {
+		t.Errorf("sleeper calls = %d, want 0 (only ErrContextNotFound is waited on)", sleeper.calls)
+	}
+}
+
+func TestHandleContextWaitAbortsOnCancellation(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	acquirer := &fakeAcquirer{}
+	contexts := &flakyContexts{fakeContexts: newFakeContexts(), misses: 99}
+	svc := payment.NewProcessor(newFakePayments(), contexts, &fakeOutbox{}, &fakeTx{}, acquirer, &fakeClock{now: now}, slog.Default())
+
+	// Shutdown mid-wait: the default sleeper aborts immediately and the
+	// retryable sentinel goes back so the broker redelivers later.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := svc.Handle(ctx, payment.PaymentRequested{ReservationID: "res-404", UserID: "user-1", Token: "tok"}, "idem-1")
+	if !errors.Is(err, payment.ErrContextNotFound) {
+		t.Fatalf("error = %v, want ErrContextNotFound (shutdown keeps retryable semantics)", err)
 	}
 	if acquirer.calls != 0 {
 		t.Errorf("acquirer called %d times, want 0", acquirer.calls)
