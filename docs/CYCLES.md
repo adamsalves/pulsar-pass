@@ -377,7 +377,7 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 | Deploy exercitado a cada PR | job `deploy-smoke` (kind + smoke ponta a ponta) |
 
 ### Testes
-- `internal/payment/processor_test.go` — 6 testes novos: resolução inline após misses, esgotamento do budget mantendo o sentinel retryable, budget custom, erro de infraestrutura não espera, cancelamento aborta sem perder retryability; séries `resolved`/`exhausted` fixadas no scrape (`metrics_test.go`).
+- `internal/payment` — 6 testes novos (5 em `processor_test.go`: resolução inline após misses, esgotamento do budget mantendo o sentinel retryable, budget custom, erro de infraestrutura não espera, cancelamento aborta sem perder retryability; 1 em `metrics_test.go`: séries `resolved`/`exhausted` fixadas no scrape).
 - `pkg/eventbus/dlq_test.go` — subtests sob um `Init`: ownership (contrato do Ciclo 4) + **réplicas contam uma vez** (duas instâncias, mesmo queue group e durable; broadcast chegaria a 3).
 - `deployments/cluster/smoke.sh` — validado ao vivo no kind (saga, holds, Prometheus, Jaeger); CI verde incluindo o job `Deploy smoke (kind)`.
 
