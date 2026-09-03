@@ -16,6 +16,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [2½ — Hardening pós-Ciclo 2](#ciclo-2½--hardening-pós-ciclo-2) | Posse da reserva no payment, `-race` no `make test`, circuit breaker do hold | ✅ concluído |
 | [3 — Observabilidade](#ciclo-3--observabilidade) | OTel + métricas Prometheus + traces OTLP + dashboards | ✅ concluído |
 | [4 — Prova de carga](#ciclo-4--prova-de-carga) | k6 a 300 VUs: p99, zero overbooking e hardening do broker | ✅ concluído |
+| [6 — Deploy e hardening](#ciclo-6--deploy-e-hardening) | kind + Helm, réplicas, smoke de cluster no CI e hardening de corrida/DLQ | ✅ concluído |
 
 ---
 
@@ -335,6 +336,56 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 - `pkg/eventbus` — `redeliveryDelay` (tabela); `TestDLQAdvisoryCountedByOwnerOnly` (advisory próprio conta, alheio ignorado).
 - `internal/core` — subscriber ACKa terminal e mantém retryable não-terminal (ports in-memory).
 - Gate completo com `-race` e e2e testcontainers verdes em todos os PRs (#31, #33, este).
+
+---
+
+## Ciclo 6 — Deploy e hardening
+
+**Objetivo:** fechar o roadmap item 6 — deploy da stack completa num cluster kind com observabilidade in-cluster — e o hardening que a réplica expõe: corrida pagamento × projeção (perda silenciosa sob pico) e multiplicação da métrica de DLQ entre réplicas. Hardening primeiro, deploy em camadas (infra → serviços → smoke/CI), cada etapa verificada no cluster real.
+
+**Commits:** `dde904d` → `1494838` (PRs #37, #40, #41, #43, #44, #46)
+
+### Entregas
+
+**Hardening de código**
+- `internal/payment/processor.go` — `waitContext`: espera inline (3 × 500ms, `sleepFor` com cancelamento, opções `WithContextWait`/`WithSleeper`) em `ErrContextNotFound` antes de devolver o erro retryable ao bus — um `payment.process` que corre contra a projeção `reservation_context` resolve inline em vez de queimar o budget de redelivery (~196 submissões perdidas no smoke do Ciclo 4). Log de debug em espera abortada por shutdown (review). Métrica `pulsar_payment_context_waits_total{resolved|exhausted}` (`internal/payment/metrics.go`, binding lazy). #32 (PR #37).
+- `pkg/eventbus/jetstream.go` — `listenDLQ` com **queue group por serviço** (`DLQQueueGroup`; `broker.Connect` ganha o parâmetro `name`, wired nos 5 mains + e2e): réplicas compartilham uma entrega por advisory — o fix de ownership do Ciclo 4 deduplicava entre *serviços*, não entre *réplicas*. Log do advisory com o schema real (`stream_seq`/`deliveries`; o campo `subject` não existe em `JSConsumerDeliveryExceededAdvisory` — verificado no fonte do nats-server v2.12.15). Painel DLQ do Grafana mantém `sum by` (com dedup estrutural, `max by` subnotificaria bursts). #36 (PR #40).
+
+**Deploy — infraestrutura (kind)**
+- `deployments/kind/config.yaml` — cluster `pulsarpass` com port mappings :8080 (gateway), :3000 (Grafana), :9090 (Prometheus), :16686 (Jaeger UI).
+- `deployments/cluster/` — Postgres StatefulSet (duas bases via o mesmo init script do compose, PVC, Secret de dev), Redis (mesma command line), NATS StatefulSet (JetStream em PVC, **`-m 8222`** — sem essa flag a porta de monitoramento nunca abre; o healthcheck do compose falhava em silêncio pelo mesmo motivo, corrigido), Jaeger all-in-one com OTLP, namespaces `pulsarpass`/`monitoring`.
+- `deployments/cluster/helm/` — Prometheus (chart 29.27.0, server-only, **scraping por pod via `dns_sd_configs`** contra services headless: raspando via Service, o LB alterna réplicas e derruba séries por processo — observado ao vivo com o contador do core) e Grafana (chart 10.5.15, viewer anônimo, sidecar de datasources/dashboards).
+- `Makefile` — `cluster-up/down`, `deploy-infra` (self-contained, dashboards gerados do JSON do compose — fonte única).
+
+**Deploy — serviços (Helm)**
+- `deployments/helm/pulsar-pass/` — um chart com os 5 Deployments (**2 réplicas cada** — prova real do queue group do core/payment/gateway e do `FOR UPDATE SKIP LOCKED` do chrono/horizon), Services headless de health, gateway em NodePort 30080, **migrations como hooks pre-install/pre-upgrade** (`migrate/migrate` v4.19.1, SQL embutido do repositório via symlink no chart — fonte única), env conforme o contrato de cada `internal/<svc>/config.go` (incluindo `REDIS_ADDR` — sem ele core/chrono rodavam degradados com o Redis do cluster ocioso), imagens GHCR do pipeline do Ciclo 5.
+- `Makefile` — `deploy-services` com `IMAGE_TAG`/`IMAGE_REGISTRY`/`EXTRA_SETS` (smoke local com imagens dev carregadas no kind).
+
+**Smoke e CI**
+- `deployments/cluster/smoke.sh` + `make cluster-smoke` — saga e2e no cluster: `CONFIRMED` com preço da projeção, hold liberado no Redis, **todos os 5 jobs com targets up no Prometheus** (`min(up)` pareado com `count(count by (job) (up)) == 5` — `min` sozinho passa vacuamente se um job não resolver nenhum target) e trace do gateway no Jaeger; recusa do simulador = retry da saga (CI zera a taxa).
+- `.github/workflows/ci.yml` — job **`deploy-smoke`**: kind a partir do config commitado, imagens dev do PR, deploy completo e smoke — o caminho de deploy inteiro exercitado a cada PR.
+- Dashboard "Saga overview" provisionado no Grafana do cluster via ConfigMap gerado do mesmo JSON do compose.
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Pagamento imediato sobrevive à corrida com a projeção | `waitContext` em `processor.go` (teto 3×500ms + pacing do broker como rede externa) |
+| Réplica não multiplica a métrica de DLQ | queue group no `listenDLQ` (`jetstream.go`) + `sum by` no painel |
+| Migrations antes de qualquer rollout | Helm hooks pre-install/pre-upgrade (`templates/migrations.yaml`) |
+| Séries por réplica visíveis no Prometheus | scraping por pod (`dns_sd_configs` + services headless) |
+| Mesmos binários de produção no cluster | chart consome `ghcr.io/adamsalves/pulsar-pass/*` do release pipeline |
+| Deploy exercitado a cada PR | job `deploy-smoke` (kind + smoke ponta a ponta) |
+
+### Testes
+- `internal/payment` — 6 testes novos (5 em `processor_test.go`: resolução inline após misses, esgotamento do budget mantendo o sentinel retryable, budget custom, erro de infraestrutura não espera, cancelamento aborta sem perder retryability; 1 em `metrics_test.go`: séries `resolved`/`exhausted` fixadas no scrape).
+- `pkg/eventbus/dlq_test.go` — subtests sob um `Init`: ownership (contrato do Ciclo 4) + **réplicas contam uma vez** (duas instâncias, mesmo queue group e durable; broadcast chegaria a 3).
+- `deployments/cluster/smoke.sh` — validado ao vivo no kind (saga, holds, Prometheus, Jaeger); CI verde incluindo o job `Deploy smoke (kind)`.
+
+### Follow-ups registrados
+- #38 — ctx do handler do bus não é cancelável (espera inline não aborta no shutdown; classe `aborted` do contador).
+- #39 — custo serial de comandos com `reservation_id` que nunca pousa.
+- #42 — re-init de métricas quebra testes com `-count≥2` (binding lazy preso ao primeiro provider).
+- #34 e #23 — decisões de backlog (tolerância T-0 de `sale_not_open`; identidade real no gateway — o header obrigatório já está em `internal/gateway/handler.go`).
 
 ---
 

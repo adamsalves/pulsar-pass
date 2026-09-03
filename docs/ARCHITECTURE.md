@@ -28,6 +28,7 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 | ADR-6 | **Monorepo Go** com `cmd/` por serviço | Contratos de evento compartilhados compilados junto, CI único, refactors atômicos |
 | ADR-7 | **Stdlib-first** no Ciclo 0 | O esqueleto usa apenas a biblioteca padrão (net/http com roteamento de métodos + path params, log/slog). Dependências entram quando a integração real exigir |
 | ADR-8 | **OpenTelemetry SDK + exporter Prometheus** para observabilidade (Ciclo 3) | O §9 do blueprint nomeia OTel e Prometheus; o SDK dá uma API única para métricas (e traces no PR 2) com instrumentos no-op quando não inicializado (testes/tools pagam zero). `pkg/metrics` inicializa o provider global com exporter Prometheus próprio, exposto em `/metrics` no servidor de health; Jaeger/collector ficam para o tracing e o Ciclo 6 |
+| ADR-9 | **Deploy alvo kind + Helm chart próprio + charts upstream single-node** (Ciclo 6) | kind reproduz a topologia do compose sem custo e roda no CI (job `deploy-smoke`); o chart `deployments/helm/pulsar-pass` empacota os 5 serviços com migrations como hooks, e a base usa charts upstream pinados (Prometheus 29.27.0, Grafana 10.5.15) + manifests fiéis ao compose (Postgres/Redis/NATS/Jaeger). Single-node por opção: réplicas dos serviços exercitam as garantias horizontais (queue groups, SKIP LOCKED); HA da base (CNPG, NATS 3×) fica para follow-up. Cloud real é overlay sobre os mesmos values |
 
 ## 3. Serviços
 
@@ -199,7 +200,7 @@ Constantes de tipo/subject vivem em `pkg/envelope` (fonte única de contratos no
 
 - **Métricas**: OTel SDK + exporter Prometheus (ADR-8) em `/metrics` na porta de health de cada serviço (9091–95), instrumentos no-op até o bootstrap. Sinais: `pulsar_gateway_http_requests_total`/`..._request_duration_seconds` (p99), `pulsar_core_reservations_total` (com `outcome="sold_out"`), `pulsar_payment_charges_total`, `pulsar_horizon_outbox_backlog`, `pulsar_chrono_pending_max_age_seconds`, `pulsar_eventbus_dlq_advisories_total`, `pulsar_holds_*` (ops, latência, estado do breaker).
 - **Tracing**: OTel OTLP (Jaeger no compose, UI `:16686`) com `traceparent` propagado nos headers do broker — gateway abre a raiz e cada handler consome dentro do mesmo trace; `correlation_id` é atributo de span. Gateway não extrai contexto de upstream por decisão (raiz do trace).
-- **Dashboards**: Prometheus + Grafana provisionados no compose; dashboard "PulsarPass — Saga overview" cobre os cinco sinais do blueprint e o alarme de acelerador degradado.
+- **Dashboards**: Prometheus + Grafana provisionados no compose **e no cluster kind** (ConfigMap gerado do mesmo JSON, sidecar do chart); dashboard "PulsarPass — Saga overview" cobre os cinco sinais do blueprint e o alarme de acelerador degradado. No cluster, o Prometheus raspa **por pod** (`dns_sd_configs` contra services headless do chart) — raspando via Service, o LB entre réplicas derruba séries por processo.
 - **Logs**: `log/slog` estruturado; `production` em JSON.
 
 ## 10. Layout do Repositório
@@ -230,7 +231,13 @@ pulsar-pass/
 ├── migrations/             # SQL versionado por serviço
 │   ├── core/
 │   └── payment/
-├── deployments/            # docker compose + Dockerfile
+├── deployments/            # compose, Dockerfile, kind, cluster e chart
+│   ├── docker/             # Dockerfile + provisioning do compose
+│   ├── docker-compose.yml  # infra local
+│   ├── k6/                 # suíte de carga
+│   ├── kind/               # config do cluster de deploy (Ciclo 6)
+│   ├── cluster/            # manifests de infra + smoke do cluster
+│   └── helm/pulsar-pass/   # chart dos 5 serviços (migrations via hooks)
 ├── docs/                   # este blueprint + diagramas
 └── scripts/
 ```
@@ -263,4 +270,4 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | 3 | Observabilidade: OTel + métricas + dashboards | ✅ |
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | ✅ |
 | 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
-| 6 | Deploy (cluster + observabilidade) e hardening | backlog |
+| 6 | Deploy (cluster + observabilidade) e hardening | ✅ |
