@@ -17,6 +17,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [3 — Observabilidade](#ciclo-3--observabilidade) | OTel + métricas Prometheus + traces OTLP + dashboards | ✅ concluído |
 | [4 — Prova de carga](#ciclo-4--prova-de-carga) | k6 a 300 VUs: p99, zero overbooking e hardening do broker | ✅ concluído |
 | [6 — Deploy e hardening](#ciclo-6--deploy-e-hardening) | kind + Helm, réplicas, smoke de cluster no CI e hardening de corrida/DLQ | ✅ concluído |
+| [7 — Quitação de backlog](#ciclo-7--quitação-de-backlog) | Follow-ups de review: hardening do bus, decisões T-0/métricas/waits e revisão completa da documentação | ✅ concluído |
 
 ---
 
@@ -386,6 +387,58 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 - #39 — custo serial de comandos com `reservation_id` que nunca pousa.
 - #42 — re-init de métricas quebra testes com `-count≥2` (binding lazy preso ao primeiro provider).
 - #34 e #23 — decisões de backlog (tolerância T-0 de `sale_not_open`; identidade real no gateway — o header obrigatório já está em `internal/gateway/handler.go`).
+
+---
+
+## Ciclo 7 — Quitação de backlog
+
+**Objetivo:** zerar as issues abertas dos reviews dos ciclos anteriores (sem tocar o blueprint): hardening do bus (#38/#47), três decisões de backlog (#34 T-0, #39 custo serial documentado + alerta, #42 rebind de métricas) e revisão completa da documentação com README completíssimo. O roadmap 0–7 fica 100% ✅; resta o Ciclo 8 (identidade real no gateway, #45).
+
+**Commits:** `de7826b` → `2504359` (PRs #48, #49, #50)
+
+### Entregas
+
+**Bus (`pkg/eventbus`)**
+- `pkg/eventbus/jetstream.go` — `JetStream.ctx`: o ctx do handler agora deriva do ctx do loop (`consumeLoop` → `handle`), cancelado junto com `Close` — shutdown desmonta handlers em curso em vez de parkar o `wg.Wait` pelo resto do orçamento de espera (~1,5s) + charge. A garantia documentada de `sleepFor` ("shutdown aborta a espera") passou de defensiva a real. #38 (PR #48).
+- `pkg/eventbus/jetstream_test.go` — deadline de 15s em `TestJetStreamRedeliveryOnHandlerFailure` (flake no CI do PR #46: ~200ms esperados vs suíte completa com `-race` + coverage); a asserção é que a redelivery chega com pacing, não que seja rápida. #47 (PR #48).
+
+**Payment (`internal/payment`)**
+- `internal/payment/processor.go` — espera abortada por cancelamento conta em classe própria (`recordContextWait("aborted")` — antes caía fora do contador); tradeoff do custo serial com `reservation_id` fantasma documentado no orçamento do wait, com o sinal operacional explícito (`exhausted` sustentado vs perfil saudável dominado por `resolved`). Negativo-cache fica de follow-up condicionado ao sinal. #38/#39 (PRs #48/#49).
+- `internal/payment/metrics.go` — doc de `pulsar_payment_context_waits_total` cobre as três classes (`resolved`/`exhausted`/`aborted`).
+
+**Core (`internal/core`)**
+- `internal/core/subscribers.go` — `terminalReserveRejection` agora só `sold_out`: `ErrSaleNotOpen` vira retryable e comandos enfileirados segundos antes da abertura atravessam a fronteira do T-0 com o budget de pacing (~14s de tolerância com `MaxDeliver` 10) em vez de serem perdidos. A métrica `pulsar_core_reservations_total{outcome="sale_not_open"}` segue contando cada tentativa — taxa sustentada após a janela é sinal de problema no cliente. Decisão de produto registrada na issue. #34 (PR #49).
+
+**Observabilidade (`pkg/metrics` + pacotes instrumentados)**
+- `pkg/metrics/metrics.go` — registry de rebind: `OnShutdown(reset)` + `runRebindHooks` executado por `Shutdown`. Instrumentos lazy (`sync.Once` + `otel.Meter`) re-armam quando os providers param — um segundo `Init` no processo rebinda em vez de escrever no registry morto (reprodução: `go test ./internal/payment/ -run TestChargeOutcomeClassification -count=2`). Hooks instalados em `pkg/eventbus/metrics.go`, `internal/core/metrics.go`, `internal/payment/metrics.go`, `internal/chrono/metrics.go`, `internal/horizon/metrics.go` e `internal/gateway/middleware.go`; `holds` rebinda naturalmente (instrumentos criados no construtor do observer). #42 (PR #49).
+
+**Stack de observabilidade (deployments)**
+- `deployments/docker/grafana/provisioning/alerting/alerts.yml` — regra `payment-context-waits-exhausted` (threshold `gt 0` sobre `increase(...{outcome="exhausted"}[10m])`, `for: 5m`), provisionada no Grafana da stack. #39 (PR #49).
+- `deployments/docker/grafana/dashboards/saga-overview.json` — painel "Payment — espera inline da projeção por outcome" (painel 11).
+
+**Documentação**
+- `README.md` — reescrito: como funciona (topologia + fluxo resumido com diagrama), API real do gateway (comandos assíncronos `202`; `GET /v1/reservations/{id}` ainda `501` — query flow no roadmap), matriz completa de env vars (código de `internal/*/config.go`), observabilidade (dashboard, alerta provisionado, tabela de métricas), k6, kind, CI/releases, contratos de eventos e troubleshooting.
+- Correção de claims da era síncrona que sobreviveram aos ciclos: gateway nunca teve autenticação/rate limiting nem respondeu `201`/`409`/`410` — comandos são assíncronos, rejeições aparecem nas projeções/dashboards/traces; evento de demo só existe via `make load-seed` (o UUID hardcoded do quickstart antigo não existia). Ajustes em `README.md`, `docs/ARCHITECTURE.md` (§3, §5.1, §5.2) e `docs/diagrams/success-flow.mmd` (PR #50).
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Shutdown cancela handlers em curso (espera inline não parka o `Close`) | `JetStream.ctx` → `consumeLoop` → `handle` em `pkg/eventbus/jetstream.go` |
+| Waits abortados contam em métrica própria | `recordContextWait("aborted")` em `internal/payment/processor.go` |
+| Comando no T-0 tem segunda chance | `terminalReserveRejection` (só `sold_out`) em `internal/core/subscribers.go` |
+| Re-Init de métricas rebinda instrumentos | `OnShutdown`/`runRebindHooks` em `pkg/metrics/metrics.go` |
+| Onda de IDs fantasmas é detectável | alerta `payment-context-waits-exhausted` + painel por outcome (`saga-overview.json`) |
+| Teste de redelivery não flakeia sob contenção | deadline de 15s em `TestJetStreamRedeliveryOnHandlerFailure` |
+
+### Testes
+- `TestJetStreamHandlerContextIsCanceledOnClose` (`pkg/eventbus/jetstream_test.go`) — handler parka no ctx; `Close` o cancela e retorna: prova o contrato de shutdown do bus.
+- `TestReinitRebindsLazyInstruments` / `TestShutdownRunsRebindHooks` (`pkg/metrics/metrics_test.go`) — reprodução in-process da armadilha do binding lazy (dois ciclos Init→bind→scrape, valor `1` nos dois) e do registry de hooks; `-count=2` verde em `internal/payment` e `pkg/eventbus`.
+- `TestOnReserveRetriesSaleNotOpen` + `TestTerminalReserveRejectionClassification` invertida (`internal/core/subscribers_internal_test.go`) — `sale_not_open` retryable, `sold_out` único terminal.
+- `TestChargeOutcomeClassification` (`internal/payment/metrics_test.go`) — pin de `outcome="aborted"` no scrape, junto com `resolved`/`exhausted`.
+
+### Follow-ups
+- #45 — identidade real no gateway (`Bearer` → `user_id`), único item restante: Ciclo 8.
+- Negativo-cache de IDs sem projeção — condicionado ao sinal do alerta `exhausted` (decisão #39).
 
 ---
 
