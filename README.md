@@ -98,11 +98,32 @@ make compose-down        # infra
 - Atomic commits: one logical change per commit, tests included with the code they cover.
 - Pull request descriptions are written in Portuguese and kept detailed (context, per-service changes, tests, trade-offs).
 
+## Deploy (kind)
+
+O cluster de deploy reproduz a topologia do compose com réplicas e primitivas de Kubernetes (probes, hooks de migration, NodePort). Requer `kind`, `kubectl` e `helm` instalados.
+
+```bash
+make cluster-up                                             # kind com port mappings (gateway :8080, UIs :3000/:9090/:16686)
+make deploy-infra                                           # Postgres/Redis/NATS/Jaeger + Prometheus/Grafana (charts pinados)
+make deploy-services                                        # chart pulsar-pass (imagens GHCR do release, 2 réplicas por serviço)
+make cluster-smoke                                          # saga e2e no cluster: reserva, pagamento, holds, métricas, traces
+make cluster-down                                           # derruba tudo
+```
+
+O `deploy-services` aceita overrides para smoke local com imagens dev:
+
+```bash
+make docker-build && kind load docker-image pulsarpass/pulsar-gateway:dev --name pulsarpass   # (repita por serviço)
+make deploy-services IMAGE_TAG=dev IMAGE_REGISTRY=pulsarpass EXTRA_SETS='--set services.payment.simulatedFailureRate=0'
+```
+
+O CI roda esse caminho inteiro a cada PR (job `deploy-smoke`).
+
 ## CI & Releases
 
 | Workflow | Gatilho | O que faz |
 |---|---|---|
-| `CI` | push em `main` e PRs | lint (golangci-lint), testes com race detector + coverage, build dos 5 binários, smoke de imagem Docker (matrix por serviço) e checagem do título do PR (Conventional Commits) |
+| `CI` | push em `main` e PRs | lint (golangci-lint), testes com race detector + coverage, build dos 5 binários, smoke de imagem Docker (matrix por serviço), **deploy smoke (kind: infra + serviços + saga e2e)** e checagem do título do PR (Conventional Commits) |
 | `Release` | tag `v*.*.*` | quality gate → GitHub Release com binários multi-arch + checksums (GoReleaser) → imagens Docker `linux/amd64` + `linux/arm64` publicadas no GHCR |
 
 Cortar uma release:
@@ -128,10 +149,10 @@ cmd/<serviço>/        # binários
 internal/<serviço>/   # código privado (domain → application → adapters)
 pkg/                  # libs compartilhadas (envelope, eventbus, health...)
 migrations/           # SQL versionado por serviço
-deployments/          # docker compose + Dockerfile
+deployments/          # compose, Dockerfile, kind, cluster manifests e Helm chart
 docs/                 # blueprint de arquitetura e diagramas
 ```
 
 ## Roadmap
 
-Ciclo 0 (fundação) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI + releases ✅ → deploy/hardening. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos) e [`docs/CYCLES.md`](docs/CYCLES.md) (o que foi feito em cada ciclo, com referências ao código).
+Ciclo 0 (fundação) → adaptadores Postgres + NATS JetStream → saga ponta a ponta com testcontainers → observabilidade (OTel) → prova de carga (k6) → CI + releases ✅ → deploy em kind + hardening ✅. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos) e [`docs/CYCLES.md`](docs/CYCLES.md) (o que foi feito em cada ciclo, com referências ao código).
