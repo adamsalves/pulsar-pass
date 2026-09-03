@@ -124,7 +124,7 @@ EVENT_ID=<id do passo 3>
 RES=$(curl -s -X POST localhost:8080/v1/reservations \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: demo-001" \
-  -H "X-User-Id: user-1" \
+  -H "Authorization: Bearer pp-token-user-1" \
   -d "{\"event_id\":\"$EVENT_ID\",\"quantity\":2}")
 echo "$RES"    # {"status":"accepted","reservation_id":"..."}
 
@@ -132,7 +132,7 @@ RID=$(echo "$RES" | sed -E 's/.*"reservation_id":"([^"]+)".*/\1/')
 curl -s -X POST localhost:8080/v1/reservations/$RID/payment \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: pay-001" \
-  -H "X-User-Id: user-1" \
+  -H "Authorization: Bearer pp-token-user-1" \
   -d '{"payment_method_token":"tok-1"}'
 
 # 6. O pagamento é assíncrono: acompanhe o resultado no estado da reserva (psql)...
@@ -155,12 +155,14 @@ docker compose -f deployments/docker-compose.yml exec postgres \
 
 Cabeçalhos obrigatórios nas mutações:
 
+- **`Authorization: Bearer <token>`** — a identidade é **resolvida pelo gateway**: o token é procurado na tabela `AUTH_TOKENS` e o `user_id` correspondente viaja no comando. Sem token válido: `401`. O header `X-User-Id` não existe mais — a posse da reserva é verificada no payment contra a identidade resolvida (identidade verificada, não client-supplied).
 - **`Idempotency-Key`** — chave de idempotência do comando; repetir a chave não duplica efeito (dedup no broker + replay guard no core/payment).
-- **`X-User-Id`** — identidade do chamador (laboratório: header client-supplied; a posse da reserva é verificada no payment — identidade verificada é o próximo ciclo).
+
+Tokens de desenvolvimento (padrão quando `AUTH_TOKENS` não está definida): `pp-token-user-1` → `user-1`, `pp-token-user-2` → `user-2`. Em cluster, a tabela viaja num Secret do Helm (`pulsar-gateway-auth`).
 
 Corpo da criação: `{"event_id": "<uuid>", "quantity": 1..MAX_RESERVATION_QTY}`. Corpo do pagamento: `{"payment_method_token": "tok-..."}` — preço e moeda vêm **sempre** da projeção da reserva, nunca do cliente.
 
-Como os comandos são assíncronos, a decisão de estoque (assento garantido vs `sold_out`) e o resultado do pagamento não chegam na resposta HTTP — o gateway responde `202` na publicação do comando. Rejeições síncronas: `400` payload/cabeçalho inválido e `503` bus indisponível. O resultado aparece no estado projetado da reserva, no dashboard do Grafana (`pulsar_core_reservations_total{outcome}`, `pulsar_payment_charges_total{outcome}`) e como um único trace da saga no Jaeger.
+Como os comandos são assíncronos, a decisão de estoque (assento garantido vs `sold_out`) e o resultado do pagamento não chegam na resposta HTTP — o gateway responde `202` na publicação do comando. Rejeições síncronas: `401` sem token válido, `400` payload/cabeçalho inválido e `503` bus indisponível. O resultado aparece no estado projetado da reserva, no dashboard do Grafana (`pulsar_core_reservations_total{outcome}`, `pulsar_payment_charges_total{outcome}`) e como um único trace da saga no Jaeger.
 
 ## Configuração (variáveis de ambiente)
 
@@ -180,6 +182,7 @@ Tudo tem padrão coerente para o quickstart; a tabela lista as variáveis por se
 | `SWEEP_INTERVAL` / `SWEEP_BATCH` | chrono | `5s` / `100` | Sweeper de expiração |
 | `POLL_INTERVAL` / `RELAY_BATCH` | horizon | `1s` / `200` | Relay do outbox |
 | `MAX_RESERVATION_QTY` | gateway | `8` | Limite anti-hoarder por reserva |
+| `AUTH_TOKENS` | gateway | `pp-token-user-1=user-1,pp-token-user-2=user-2` | Tabela de bearer tokens (`token=user_id`, CSV); kind via Secret `pulsar-gateway-auth`; valor malformado falha o boot |
 | `SIMULATED_CHARGE_DELAY` | payment | `250ms` | Latência artificial do acquirer |
 | `SIMULATED_FAILURE_RATE` | payment | `0.05` | Taxa de recusa simulada |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | todos | unset | Ex.: `http://localhost:4317`; unset = sem traces (métricas seguem) |
@@ -229,17 +232,19 @@ Perfil de referência: 300 VUs de pico, ramp 2min + platô 3min + ramp-down 1min
 ```bash
 make compose-up && make migrate-core-up && make migrate-payment-up
 
-# recomendado sob carga: acquirer rápido e relay folgado
+# recomendado sob carga: acquirer rápido, relay folgado e uma tabela de
+# identidades maior que a CAPACITY (reserva pendente prende o usuário
+# até o sweep do TTL)
 SIMULATED_CHARGE_DELAY=1ms make run-payment &
 RELAY_BATCH=500 POLL_INTERVAL=200ms make run-horizon &
-make run-core & make run-chrono & make run-gateway &
+AUTH_TOKENS="$(make load-auth-tokens)" make run-core & make run-chrono & make run-gateway &
 
 EVENT_ID=$(make load-seed CAPACITY=1000)           # semeia o evento e imprime o id
-make load-run EVENT_ID=$EVENT_ID                   # suíte k6 (thresholds: p99, 0% falhas)
+make load-run EVENT_ID=$EVENT_ID AUTH_TOKENS="$(make load-auth-tokens)"   # suíte k6 (thresholds: p99, 0% falhas)
 make load-verify                                   # invariantes de inventário: imprime 0 se sãos
 ```
 
-O `load-run` executa o k6 em container com `--network host` (semântica Linux; em macOS/Windows ajuste para `host.docker.internal` no Makefile). Enquanto roda, acompanhe o dashboard no Grafana: `sold_out` dispara no pico, o backlog das outboxes precisa drenar a zero no ramp-down e o breaker não pode abrir sem Redis fora.
+O `load-run` executa o k6 em container com `--network host` (semântica Linux; em macOS/Windows ajuste para `host.docker.internal` no Makefile). `make load-auth-tokens` gera `LOAD_USERS` (padrão 2000) pares `token=user_id` no formato `AUTH_TOKENS` — passe a mesma string ao gateway e ao k6. Enquanto roda, acompanhe o dashboard no Grafana: `sold_out` dispara no pico, o backlog das outboxes precisa drenar a zero no ramp-down e o breaker não pode abrir sem Redis fora.
 
 ## Deploy (kind + Helm)
 
@@ -300,6 +305,7 @@ Streams: `RESERVATIONS` e `PAYMENTS`; consumers duráveis por serviço (queue gr
 
 ## Troubleshooting
 
+- **`401` no gateway** — falta o header `Authorization: Bearer <token>` ou o token não está na tabela `AUTH_TOKENS` do processo (dev defaults: `pp-token-user-1`/`pp-token-user-2`).
 - **Reservar falha com evento inexistente** — o evento de demo não vem das migrations; semeie com `make load-seed` (ver Quickstart).
 - **Gateway responde mas nada acontece** — sem NATS no ar o gateway cai para bus in-memory em development (ou force `BUS_MODE=memory`): comandos nunca chegam aos serviços. Suba o compose e reinicie o gateway.
 - **`make test` falha pedindo Docker** — a suíte e2e usa testcontainers; ou sobe o Docker, ou roda `SKIP_E2E=1 make test`.
@@ -309,4 +315,4 @@ Streams: `RESERVATIONS` e `PAYMENTS`; consumers duráveis por serviço (queue gr
 
 ## Roadmap
 
-Ciclos 0–7 concluídos: fundação → adaptadores reais (Postgres + JetStream) → saga e2e com testcontainers → hardening (posse, `-race`, breaker) → observabilidade (OTel) → prova de carga (k6, 300 VUs, zero overbooking) → CI + releases (GoReleaser, GHCR) → deploy em kind + hardening → quitação do backlog de review (T-0 retryable, rebind de métricas, alerta de waits, cancelamento de handler no shutdown) ✅. Próximo ciclo: identidade real no gateway (token de sessão/API key no lugar do header client-supplied). Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos) e [`docs/CYCLES.md`](docs/CYCLES.md).
+Ciclos 0–8 concluídos ✅: fundação → adaptadores reais (Postgres + JetStream) → saga e2e com testcontainers → hardening (posse, `-race`, breaker) → observabilidade (OTel) → prova de carga (k6, 300 VUs, zero overbooking) → CI + releases (GoReleaser, GHCR) → deploy em kind + hardening → quitação do backlog de review → identidade real no gateway (bearer tokens). Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#12-roadmap-de-ciclos) e [`docs/CYCLES.md`](docs/CYCLES.md).

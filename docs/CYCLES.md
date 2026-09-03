@@ -18,6 +18,7 @@ Registro **ciclo a ciclo** do que foi construído, com referências diretas ao c
 | [4 — Prova de carga](#ciclo-4--prova-de-carga) | k6 a 300 VUs: p99, zero overbooking e hardening do broker | ✅ concluído |
 | [6 — Deploy e hardening](#ciclo-6--deploy-e-hardening) | kind + Helm, réplicas, smoke de cluster no CI e hardening de corrida/DLQ | ✅ concluído |
 | [7 — Quitação de backlog](#ciclo-7--quitação-de-backlog) | Follow-ups de review: hardening do bus, decisões T-0/métricas/waits e revisão completa da documentação | ✅ concluído |
+| [8 — Identidade real no gateway](#ciclo-8--identidade-real-no-gateway) | Bearer tokens resolvidos no gateway; `X-User-Id` client-supplied removido (ADR-10) | ✅ concluído |
 
 ---
 
@@ -439,6 +440,51 @@ Esqueleto rodável ponta a ponta em modo dev (bus in-memory, Postgres real), com
 ### Follow-ups
 - #45 — identidade real no gateway (`Bearer` → `user_id`), único item restante: Ciclo 8.
 - Negativo-cache de IDs sem projeção — condicionado ao sinal do alerta `exhausted` (decisão #39).
+
+---
+
+## Ciclo 8 — Identidade real no gateway
+
+**Objetivo:** fechar o roadmap (item 8, #23/#45): a identidade passa a ser **verificada** — o gateway resolve `user_id` de `Authorization: Bearer <token>` numa tabela de tokens e o `X-User-Id` client-supplied deixa de existir. A posse do payment (#15/#19) permanece idêntica, agora contra identidade que o chamador não escolheu.
+
+**Commits:** `772a6e8` → `<hash-final>` (PR #53)
+
+### Entregas
+
+**Gateway (`internal/gateway`)**
+- `internal/gateway/auth.go` — middleware `Auth`: extrai `Bearer <token>` (scheme case-insensitive, RFC 7235), consulta a tabela e injeta `user_id` no ctx (`UserIDFrom`); falta/erro → `401` com `WWW-Authenticate` antes de qualquer handler. Lookup por map get — tokens de baixa entropia de lab; sessões/hash/IdP ficam para fora do escopo (ADR-10).
+- `internal/gateway/config.go` — `AUTH_TOKENS` (CSV `token=user_id`): `ParseAuthTokens` falha loud em par malformado, token duplicado ou spec vazia (lockout silencioso não é opção); unset cai para os dev defaults documentados (`pp-token-user-1=user-1`, `pp-token-user-2=user-2`). `LoadConfig` agora retorna `(Config, error)` — boot falha com tabela quebrada em vez de encolher.
+- `internal/gateway/routes.go` — `Auth` no fim da cadeia (dentro de Logging/Tracing/Metrics): 401 é contado, traceado e logado como qualquer status.
+- `internal/gateway/handler.go` — handlers leem `UserIDFrom(ctx)`; vazio = wiring bug → `500` (não é mais problema do cliente).
+
+**Deploy (`deployments/helm`, `deployments/cluster`, `deployments/k6`, `Makefile`)**
+- `deployments/helm/pulsar-pass/templates/secret-gateway-auth.yaml` — Secret `pulsar-gateway-auth` com a tabela; `_helpers.tpl` monta `AUTH_TOKENS` via `secretKeyRef` (issue pedia Secret no kind ✓); `values.yaml` traz os dev defaults.
+- `deployments/cluster/smoke.sh` — saga autenticada com `SMOKE_TOKEN` (default = dev default do chart).
+- `deployments/k6/flash-sale.js` — carrega `AUTH_TOKENS` (mesmo CSV do gateway) e escolhe identidade aleatória por iteração (paga com a mesma — mesmo owner, sem impostor no perfil de carga).
+- `Makefile` — `load-auth-tokens` gera `LOAD_USERS` (2000) pares; `load-run` exige `AUTH_TOKENS`. A tabela precisa ser maior que a `CAPACITY`: reserva pendente prende o usuário (índice único one-active-per-user) até o sweep do TTL.
+
+**Documentação**
+- `README.md` — API com `Authorization` (e `401`), dev tokens documentados, receita de carga com `load-auth-tokens`, troubleshooting de 401, roadmap 0–8 ✅.
+- `docs/ARCHITECTURE.md` — ADR-10 (tradeoff tabela estática × IdP/sessões), §3, §5.1 e §11 atualizados.
+
+### Garantias implementadas
+| Garantia | Onde vive |
+|---|---|
+| Identidade é verificada, não client-supplied | `Auth` em `internal/gateway/auth.go` — `X-User-Id` removido de toda a superfície |
+| Comando carrega identidade resolvida | handlers leem `UserIDFrom(ctx)`; teste assertion em `handler_test.go` |
+| Token inválido nunca chega ao handler | `401` + `WWW-Authenticate` antes da cadeia de handlers |
+| Tabela quebrada não sobe | `ParseAuthTokens`/`LoadConfig` falham o boot (`config.go`) |
+| Kind carrega a tabela via Secret | `secret-gateway-auth.yaml` + `secretKeyRef` no chart |
+| Impostor segue rejeitado downstream | e2e `TestSagaPaymentByNonOwnerRejected` com token diferente do owner |
+
+### Testes
+- `TestAuthMiddlewareResolvesIdentity` / `TestAuthUserIDFromContext` (`auth_test.go`) — tabela-driven: header ausente, scheme errado, token desconhecido, scheme case-insensitive, accessor fora da cadeia.
+- `TestParseAuthTokens` / `TestLoadConfigDefaultsToDevTokens` / `TestLoadConfigRejectsMalformedAuthTokens` (`config_test.go`) — gramática da tabela e fail-fast do boot.
+- `TestCreate/ConfirmPayment*` (`handler_test.go`) — 401 anônimo; `user_id` no comando = token-resolvido.
+- e2e (`internal/e2e`) — suíte inteira autenticada via tabela de tokens; impostor usa identidade válida **diferente** e segue rejeitado sem efeitos (`ErrNotOwner`).
+
+### Follow-ups
+- Nenhum aberto no escopo do gateway. Fora de escopo deliberado (ADR-10): sessões com revogação, hash de chaves, IdP — para quando o projeto sair do laboratório.
 
 ---
 

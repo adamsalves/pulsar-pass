@@ -29,12 +29,13 @@ O PulsarPass resolve o problema de vender ingressos limitados quando milhares de
 | ADR-7 | **Stdlib-first** no Ciclo 0 | O esqueleto usa apenas a biblioteca padrão (net/http com roteamento de métodos + path params, log/slog). Dependências entram quando a integração real exigir |
 | ADR-8 | **OpenTelemetry SDK + exporter Prometheus** para observabilidade (Ciclo 3) | O §9 do blueprint nomeia OTel e Prometheus; o SDK dá uma API única para métricas (e traces no PR 2) com instrumentos no-op quando não inicializado (testes/tools pagam zero). `pkg/metrics` inicializa o provider global com exporter Prometheus próprio, exposto em `/metrics` no servidor de health; Jaeger/collector ficam para o tracing e o Ciclo 6 |
 | ADR-9 | **Deploy alvo kind + Helm chart próprio + charts upstream single-node** (Ciclo 6) | kind reproduz a topologia do compose sem custo e roda no CI (job `deploy-smoke`); o chart `deployments/helm/pulsar-pass` empacota os 5 serviços com migrations como hooks, e a base usa charts upstream pinados (Prometheus 29.27.0, Grafana 10.5.15) + manifests fiéis ao compose (Postgres/Redis/NATS/Jaeger). Single-node por opção: réplicas dos serviços exercitam as garantias horizontais (queue groups, SKIP LOCKED); HA da base (CNPG, NATS 3×) fica para follow-up. Cloud real é overlay sobre os mesmos values |
+| ADR-10 | **Identidade do gateway via tabela estática de bearer tokens** (Ciclo 8, #45) | O `X-User-Id` client-supplied permitia se passar por outro usuário — a checagem de posse (#15/#19) era tão forte quanto a identidade projetada. Agora o middleware `Auth` resolve `user_id` de `Authorization: Bearer <token>` numa tabela CSV (`AUTH_TOKENS`; dev defaults documentados, kind via Secret) e rejeita com `401` antes de qualquer handler; o header client-supplied deixou de existir. Tabela estática por opção: escopo laboratório, zero dependência nova (sem DB/IdP no gateway); sessões com hash/revogação e provider de identidade entram quando o projeto sair do lab. A posse do payment (#15/#19) segue inalterada — agora contra identidade verificada |
 
 ## 3. Serviços
 
 | Serviço | Responsabilidade | Comunicação |
 |---|---|---|
-| `pulsar-gateway` | Ingress HTTP: validação, idempotência (`Idempotency-Key` obrigatória nas mutações) e publicação de comandos. Identidade client-supplied via `X-User-Id` (identidade verificada é o próximo ciclo) | HTTP → NATS (comandos) |
+| `pulsar-gateway` | Ingress HTTP: **identidade real** — resolve `user_id` do bearer token (`Authorization: Bearer`, tabela `AUTH_TOKENS`, ADR-10) — validação, idempotência (`Idempotency-Key` obrigatória nas mutações) e publicação de comandos | HTTP → NATS (comandos) |
 | `pulsar-core` | Dono do estoque e da reserva. Máquina de estados `PENDING → CONFIRMED / EXPIRED / FAILED / CANCELLED`. Capacidade consumida por update atômico no Postgres (autoridade); Redis registra `hold:{reservation_id}` como acelerador, com degradação graciosa | Consome comandos/eventos, publica eventos |
 | `pulsar-chrono` | TTL worker: monitora `reservations.expires_at` (sweep no Postgres) e emite `reservation.expired` | Postgres → NATS |
 | `pulsar-payment` | Processa o pagamento na janela TTL (acquirer simulado no MVP) e emite `payment.succeeded` / `payment.failed` | Consome comando, publica eventos |
@@ -66,14 +67,15 @@ sequenceDiagram
     participant R as Redis
     participant P as pulsar-payment
 
-    U->>GW: POST /v1/reservations (Idempotency-Key)
+    U->>GW: POST /v1/reservations (Authorization: Bearer + Idempotency-Key)
+    GW->>GW: Auth resolve o user_id do token (401 se inválido)
     GW->>N: publish reservation.reserve (Nats-Msg-Id)
     GW-->>U: 202 Accepted (reservation_id)
     N->>C: consome comando
     C->>PG: BEGIN; UPDATE events SET reserved_count = reserved_count + 1 WHERE id = $1 AND reserved_count + sold_count < capacity; INSERT reservation (PENDING, expires_at); INSERT outbox (ticket.reserved); COMMIT
     alt commit ok (assento garantido)
         C->>R: SET hold:{reservation_id} EX 600 (acelerador)
-        U->>GW: POST /v1/reservations/{id}/payment (Idempotency-Key)
+        U->>GW: POST /v1/reservations/{id}/payment (Authorization: Bearer + Idempotency-Key)
         GW->>N: publish payment.process
         N->>P: consome comando
         P->>P: acquirer.charge() (simulado)
@@ -256,6 +258,7 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | `SWEEP_INTERVAL` / `SWEEP_BATCH` | chrono | `5s` / `100` | Sweeper de expiração |
 | `POLL_INTERVAL` / `RELAY_BATCH` | horizon | `1s` / `200` | Relay do outbox |
 | `MAX_RESERVATION_QTY` | gateway | `8` | Limite anti-hoarder |
+| `AUTH_TOKENS` | gateway | dev defaults (`pp-token-user-1=user-1,...`) | Tabela de bearer tokens (`token=user_id`, CSV, ADR-10); kind via Secret; malformada falha o boot |
 
 ## 12. Roadmap de Ciclos
 
@@ -270,4 +273,4 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
 | 6 | Deploy (cluster + observabilidade) e hardening | ✅ |
 | 7 | Quitação de backlog: hardening do bus, T-0 retryable, rebind de métricas, alerta de waits, revisão de docs | ✅ |
-| 8 | Identidade real no gateway (token de sessão/API key — #45) | 🔜 |
+| 8 | Identidade real no gateway (token de sessão/API key — #45) | ✅ |
