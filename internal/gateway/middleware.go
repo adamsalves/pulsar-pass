@@ -13,6 +13,7 @@ import (
 	api "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 	"github.com/adamsalves/pulsar-pass/pkg/uid"
 )
 
@@ -63,6 +64,13 @@ type httpInstruments struct {
 }
 
 var httpMetrics httpInstruments
+
+// Re-arm the lazy binding when the metrics providers shut down, so a
+// second Init in the same process rebinds instead of writing into the
+// dead registry.
+func init() {
+	metrics.OnShutdown(func() { httpMetrics = httpInstruments{} })
+}
 
 func (i *httpInstruments) get() error {
 	i.once.Do(func() {
