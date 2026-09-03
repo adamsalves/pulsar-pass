@@ -7,6 +7,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
+
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 )
 
 // dlqMetrics holds the lazily created instruments: the package
@@ -20,6 +22,13 @@ type dlqMetrics struct {
 }
 
 var dlqM dlqMetrics
+
+// Re-arm the lazy binding when the metrics providers shut down, so a
+// second Init in the same process rebinds instead of writing into the
+// dead registry.
+func init() {
+	metrics.OnShutdown(func() { dlqM = dlqMetrics{} })
+}
 
 // incDLQAdvisory counts one max-deliveries advisory, the signal that a
 // message exhausted its redelivery budget and landed in the DLQ.

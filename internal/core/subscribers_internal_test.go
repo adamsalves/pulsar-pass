@@ -26,16 +26,25 @@ func (fakeReservations) Create(context.Context, *domain.Reservation) error { ret
 
 func (fakeReservations) Update(context.Context, *domain.Reservation) error { return nil }
 
-type fakeInventory struct{ reserveErr error }
+type fakeInventory struct {
+	reserveErr error
+	// saleOpens overrides the sale window; zero keeps the default
+	// (already open), the shape every pre-existing test relies on.
+	saleOpens time.Time
+}
 
 func (f fakeInventory) Event(context.Context, string) (*domain.Event, error) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	opens := f.saleOpens
+	if opens.IsZero() {
+		opens = base.Add(-time.Hour)
+	}
 	return &domain.Event{
 		ID:          "event-1",
 		Name:        "Show",
 		Venue:       "Arena",
 		StartsAt:    base.Add(24 * time.Hour),
-		SaleOpensAt: base.Add(-time.Hour),
+		SaleOpensAt: opens,
 		PriceCents:  1000,
 		Capacity:    100,
 	}, nil
@@ -99,15 +108,27 @@ func TestOnReserveRetriesStoreFailures(t *testing.T) {
 	}
 }
 
+// TestOnReserveRetriesSaleNotOpen: a command arriving before the sale
+// opens stays retryable — the T-0 frontier must not permanently reject
+// clients queued against it; the paced redelivery budget gives the
+// command a second chance once the window opens.
+func TestOnReserveRetriesSaleNotOpen(t *testing.T) {
+	sub := newTestSubscriber(fakeInventory{saleOpens: time.Now().Add(time.Hour)})
+
+	if err := sub.onReserve(context.Background(), reserveCommand()); err == nil {
+		t.Fatal("onReserve error = nil, want retryable error while the sale is not open")
+	}
+}
+
 // TestTerminalReserveRejectionClassification pins the terminal set:
-// only sold-out and sale-not-open are acknowledged; everything else
-// must retry.
+// only sold-out is acknowledged. sale-not-open is deliberately
+// retryable (T-0 tolerance), and everything else must retry.
 func TestTerminalReserveRejectionClassification(t *testing.T) {
 	if reason, ok := terminalReserveRejection(domain.ErrSoldOut); !ok || reason != "sold_out" {
 		t.Errorf("sold_out = (%q, %v), want (sold_out, true)", reason, ok)
 	}
-	if reason, ok := terminalReserveRejection(domain.ErrSaleNotOpen); !ok || reason != "sale_not_open" {
-		t.Errorf("sale_not_open = (%q, %v), want (sale_not_open, true)", reason, ok)
+	if _, ok := terminalReserveRejection(domain.ErrSaleNotOpen); ok {
+		t.Error("sale_not_open must not be terminal (retryable: T-0 frontier tolerance)")
 	}
 	if _, ok := terminalReserveRejection(domain.ErrInvalidQuantity); ok {
 		t.Error("invalid quantity must not be terminal (retryable)")

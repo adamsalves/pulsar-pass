@@ -48,7 +48,45 @@ var (
 	initMu sync.Mutex
 	// shutdown stops the providers installed by Init; nil until then.
 	shutdown func(context.Context) error
+	// rebindHooks holds the resets registered with OnShutdown. Lazy
+	// instrument bindings re-arm here so a second Init in the same
+	// process rebinds instead of staying pinned to a shut-down
+	// provider.
+	rebindMu    sync.Mutex
+	rebindHooks []func()
 )
+
+// OnShutdown registers a hook that re-arms package-level instrument
+// bindings when Shutdown runs. Instruments created through the lazy
+// binding pattern (a package-level sync.Once creating instruments from
+// otel.Meter on first use) bind to the provider in place at that
+// moment: after Shutdown stops that provider, the instruments would
+// keep writing into a dead registry. The hook resets the package's
+// Once and instrument variables so the next use rebinds — to the
+// no-op default when metrics stay off, or to the provider of a
+// subsequent Init (tests with -count>1, tooling that re-inits).
+//
+// Hooks run after the providers stop, in registration order; they must
+// only touch package-level binding state and stay cheap. Register from
+// package init, not per call site.
+func OnShutdown(reset func()) {
+	rebindMu.Lock()
+	defer rebindMu.Unlock()
+	rebindHooks = append(rebindHooks, reset)
+}
+
+// runRebindHooks executes the registered resets, snapshotting the list
+// under the lock so a hook could register further hooks without
+// deadlocking.
+func runRebindHooks() {
+	rebindMu.Lock()
+	hooks := make([]func(), len(rebindHooks))
+	copy(hooks, rebindHooks)
+	rebindMu.Unlock()
+	for _, hook := range hooks {
+		hook()
+	}
+}
 
 // ErrAlreadyInitialized guards double Init in one process: the global
 // providers and the exporter registry can only be set once.
@@ -177,13 +215,16 @@ func stripEndpointScheme(endpoint string) string {
 	return endpoint
 }
 
-// Shutdown flushes and stops the providers installed by Init. Safe to
-// call when metrics were never initialized.
+// Shutdown flushes and stops the providers installed by Init and runs
+// the rebind hooks registered with OnShutdown, leaving the process
+// ready for a fresh Init. Safe to call when metrics were never
+// initialized.
 func Shutdown(ctx context.Context) error {
 	initMu.Lock()
 	sd := shutdown
 	shutdown = nil
 	initMu.Unlock()
+	runRebindHooks()
 	if sd == nil {
 		return nil
 	}

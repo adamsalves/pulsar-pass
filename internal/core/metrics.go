@@ -10,6 +10,7 @@ import (
 	api "go.opentelemetry.io/otel/metric"
 
 	"github.com/adamsalves/pulsar-pass/internal/core/domain"
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 )
 
 // useCaseMetrics holds the lazily created instruments. The package
@@ -23,6 +24,13 @@ type useCaseMetrics struct {
 }
 
 var ucMetrics useCaseMetrics
+
+// Re-arm the lazy binding when the metrics providers shut down, so a
+// second Init in the same process rebinds instead of writing into the
+// dead registry.
+func init() {
+	metrics.OnShutdown(func() { ucMetrics = useCaseMetrics{} })
+}
 
 func (m *useCaseMetrics) counter() (api.Int64Counter, error) {
 	m.once.Do(func() {

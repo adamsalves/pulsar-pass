@@ -1,0 +1,74 @@
+# Regras de alerta do PulsarPass, provisionadas no Grafana (unified
+# alerting). A pasta acompanha o dashboard "PulsarPass" no provisioning
+# de dashboards; os sinais vivem no Prometheus (datasource uid
+# "prometheus").
+apiVersion: 1
+
+groups:
+  # #39 — waits inline da projeção reservation_context esgotando o
+  # budget. Resolved domina no perfil saudável (corrida legítima entre
+  # payment.process e ticket.reserved); exhausted sustentado é o sinal
+  # de reservation_id fantasma — onda de comandos que nunca pousam e
+  # travam o consumer sequencial do payment. O negativo-cache só vale a
+  # pena se este sinal aparecer de verdade.
+  - orgId: 1
+    name: pulsar-pass-sagas
+    folder: PulsarPass
+    interval: 1m
+    rules:
+      - uid: payment-context-waits-exhausted
+        title: Payment — waits inline exhausted sustentado
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: sum(increase(pulsar_payment_context_waits_total{outcome="exhausted"}[10m]))
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: gt
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: C
+              type: threshold
+        annotations:
+          summary: >-
+            Waits inline pela projeção reservation_context esgotando o budget:
+            sinal de reservation_id fantasma (ou lag anômalo da projeção).
+            Pagamentos legítimos podem estar atrasados atrás de uma onda de
+            comandos que nunca pousam — investigar a origem dos IDs no gateway.
+        labels:
+          severity: warning
+        isPaused: false

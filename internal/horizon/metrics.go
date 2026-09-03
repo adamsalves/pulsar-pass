@@ -6,6 +6,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	api "go.opentelemetry.io/otel/metric"
+
+	"github.com/adamsalves/pulsar-pass/pkg/metrics"
 )
 
 // BacklogCounter is the optional capability of an OutboxStore to
@@ -29,6 +31,13 @@ type relayMetrics struct {
 }
 
 var rlMetrics relayMetrics
+
+// Re-arm the lazy binding when the metrics providers shut down, so a
+// second Init in the same process rebinds instead of writing into the
+// dead registry.
+func init() {
+	metrics.OnShutdown(func() { rlMetrics = relayMetrics{} })
+}
 
 func (m *relayMetrics) instruments() (published, failures api.Int64Counter, lag api.Int64Gauge, err error) {
 	m.once.Do(func() {

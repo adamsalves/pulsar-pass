@@ -158,6 +158,21 @@
           "legendFormat": "{{stream}} {{consumer}}"
         }
       ]
+    },
+    {
+      "id": 11,
+      "title": "Payment — espera inline da projeção por outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "description": "Waits inline pela projeção reservation_context. resolved domina no perfil saudável (corrida legítima comandando); exhausted sustentado é o sinal de reservation_id fantasma (ou lag anômalo da projeção) — regra de alerta payment-context-waits-exhausted. aborted aparece em shutdowns.",
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(pulsar_payment_context_waits_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
     }
   ]
 }
