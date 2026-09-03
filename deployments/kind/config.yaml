@@ -1,0 +1,23 @@
+# kind cluster for the PulsarPass deploy (cycle 6).
+# The extraPortMappings expose the entrypoints on the host the same way
+# the docker-compose topology does: gateway :8080, Grafana :3000,
+# Jaeger UI :16686 and Prometheus :9090. The container ports are the
+# NodePorts pinned in deployments/cluster/ (NodePort services).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pulsarpass
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080 # pulsar-gateway
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 30300 # grafana UI
+        hostPort: 3000
+        protocol: TCP
+      - containerPort: 30090 # prometheus UI
+        hostPort: 9090
+        protocol: TCP
+      - containerPort: 30686 # jaeger UI
+        hostPort: 16686
+        protocol: TCP

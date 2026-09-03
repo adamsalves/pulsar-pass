@@ -1,0 +1,33 @@
+# Values for grafana/grafana (pinned version in the Makefile). Dev
+# cluster: anonymous Viewer access and no login form — same posture as
+# the compose Grafana. Datasource and dashboards are provisioned via
+# sidecar labels (grafana_datasource / grafana_dashboard ConfigMaps);
+# searchNamespace ALL lets the services ship dashboard ConfigMaps from
+# the pulsarpass namespace later.
+persistence:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+grafana.ini:
+  auth.anonymous:
+    enabled: true
+    org_role: Viewer
+  auth:
+    disable_login_form: true
+
+sidecar:
+  dashboards:
+    enabled: true
+    searchNamespace: ALL
+    label: grafana_dashboard
+  datasources:
+    enabled: true
+    searchNamespace: ALL
+    label: grafana_datasource

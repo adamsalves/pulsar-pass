@@ -1,0 +1,102 @@
+# PostgreSQL (core + payment databases) — faithful to the docker-compose
+# topology: database-per-service in a single instance, pulsar_core from
+# POSTGRES_DB and pulsar_payment created by the init script (ADR-5).
+# Dev-only credentials, same as compose; real deployments swap this
+# Secret for a managed one.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: pulsarpass
+type: Opaque
+stringData:
+  POSTGRES_USER: pulsar
+  POSTGRES_PASSWORD: pulsar
+  POSTGRES_DB: pulsar_core
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: pulsarpass
+data:
+  init-databases.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Database-per-service: pulsar_core comes from POSTGRES_DB, pulsar_payment
+    # is created here.
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        CREATE DATABASE pulsar_payment;
+        GRANT ALL PRIVILEGES ON DATABASE pulsar_payment TO $POSTGRES_USER;
+    EOSQL
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: pulsarpass
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - containerPort: 5432
+              name: pg
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "pulsar", "-d", "pulsar_core"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pulsarpass
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: pg

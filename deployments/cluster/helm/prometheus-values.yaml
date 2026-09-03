@@ -1,0 +1,37 @@
+# Values for prometheus-community/prometheus (pinned version in the
+# Makefile). Dev cluster: ephemeral storage (compose has none either)
+# and only the server — no node exporter, alertmanager or pushgateway.
+# The PulsarPass services are scraped from the static service DNS names;
+# targets stay down until make deploy-services runs, then go up.
+server:
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+extraScrapeConfigs: |
+  - job_name: pulsarpass
+    static_configs:
+      - targets:
+          - pulsar-gateway.pulsarpass.svc:9091
+          - pulsar-core.pulsarpass.svc:9092
+          - pulsar-chrono.pulsarpass.svc:9093
+          - pulsar-payment.pulsarpass.svc:9094
+          - pulsar-horizon.pulsarpass.svc:9095
+
+# Dev cluster: only the server — the subchart extras (node exporter,
+# kube-state-metrics, pushgateway) add pods without value here, and
+# there is no alertmanager component in this topology.
+prometheus-node-exporter:
+  enabled: false
+prometheus-kube-state-metrics:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+alertmanager:
+  enabled: false
