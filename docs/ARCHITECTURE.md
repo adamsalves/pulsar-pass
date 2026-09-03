@@ -269,3 +269,5 @@ Regras: `internal/<svc>/domain` não importa nada de I/O; adapters (Postgres, NA
 | 4 | Prova de carga (k6): validar p99 e zero overbooking sob pico | ✅ |
 | 5 | CI + release pipeline (GitHub Actions, GoReleaser, GHCR multi-arch) | ✅ |
 | 6 | Deploy (cluster + observabilidade) e hardening | ✅ |
+| 7 | Quitação de backlog: hardening do bus, T-0 retryable, rebind de métricas, alerta de waits, revisão de docs | ✅ |
+| 8 | Identidade real no gateway (token de sessão/API key — #45) | 🔜 |
