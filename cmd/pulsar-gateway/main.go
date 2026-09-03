@@ -92,7 +92,7 @@ func selectBus(ctx context.Context, cfg gateway.Config, log *slog.Logger) (event
 	if cfg.BusMode != "nats" {
 		return nil, fmt.Errorf("unknown BUS_MODE %q (use nats or memory)", cfg.BusMode)
 	}
-	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	bus, err := broker.Connect(ctx, cfg.NATSURL, "pulsar-gateway", log)
 	if err == nil {
 		return bus, nil
 	}

@@ -26,12 +26,16 @@ func Streams() []eventbus.StreamSpec {
 // (NakWithDelay growing with the delivery attempt, budget bounded by
 // MaxDeliver), so a command racing its state — payment.process arriving
 // before the reservation context projection — stays retryable for
-// seconds instead of burning its delivery budget instantly.
-func Connect(ctx context.Context, url string, log *slog.Logger) (*eventbus.JetStream, error) {
+// seconds instead of burning its delivery budget instantly. name is the
+// service identity: replicas of the same service join one DLQ advisory
+// queue group so the DLQ metric counts once per service, not once per
+// replica.
+func Connect(ctx context.Context, url, name string, log *slog.Logger) (*eventbus.JetStream, error) {
 	bus, err := eventbus.ConnectJetStream(ctx, eventbus.JetStreamConfig{
-		URL:         url,
-		Streams:     Streams(),
-		DedupWindow: 2 * time.Minute,
+		URL:           url,
+		Streams:       Streams(),
+		DedupWindow:   2 * time.Minute,
+		DLQQueueGroup: name,
 	}, log)
 	if err != nil {
 		return nil, fmt.Errorf("broker connect: %w", err)

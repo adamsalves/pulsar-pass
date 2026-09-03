@@ -45,7 +45,7 @@ func run() error {
 	}
 	defer pool.Close()
 
-	bus, err := broker.Connect(ctx, cfg.NATSURL, log)
+	bus, err := broker.Connect(ctx, cfg.NATSURL, "pulsar-chrono", log)
 	if err != nil {
 		return err
 	}
