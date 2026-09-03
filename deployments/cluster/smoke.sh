@@ -73,11 +73,14 @@ run_saga() {
   sleep 2
 
   log "submitting payment"
+  # errexit is suppressed inside run_saga (the caller retries on
+  # declines via `|| rc=$?`), so every failure path here is explicit.
   curl -fsS -X POST "$GATEWAY_URL/v1/reservations/$res_id/payment" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $idem_seed-pay" \
     -H "X-User-Id: $user" \
-    -d '{"payment_method_token":"tok-smoke"}' >/dev/null
+    -d '{"payment_method_token":"tok-smoke"}' >/dev/null \
+    || fail "payment submit for $res_id failed"
 
   # Wait for the saga to settle.
   local status="" reason="" amount=""
@@ -106,9 +109,17 @@ run_saga() {
     "SELECT amount_cents FROM payments WHERE reservation_id='$res_id' LIMIT 1")
   [[ "$amount" == "$((QUANTITY * 1000))" ]] || fail "amount_cents=$amount, want $((QUANTITY * 1000)) (quantity x projected price)"
 
-  # Hold hygiene: released on confirmation.
+  # Hold hygiene: released on confirmation. `Confirm` commits the row
+  # before releasing the hold, so poll briefly for the release instead
+  # of asserting the instant the DB shows CONFIRMED. A failed exec must
+  # fail the check (an empty --scan result alone would pass vacuously).
   local holds
-  holds=$(kubectl exec "$(redis_pod)" -n "$NAMESPACE" -- redis-cli --scan --pattern "hold:$res_id")
+  for _ in $(seq 1 3); do
+    holds=$(kubectl exec "$(redis_pod)" -n "$NAMESPACE" -- redis-cli --scan --pattern "hold:$res_id") \
+      || fail "hold check failed (kubectl exec against the redis pod)"
+    [[ -z "$holds" ]] && break
+    sleep 1
+  done
   [[ -z "$holds" ]] || fail "hold key still present after confirmation: $holds"
 
   log "reservation $res_id CONFIRMED with amount $amount"
@@ -137,7 +148,9 @@ log "checking Prometheus targets"
 #     series (service renamed, scaled to zero) — the paired count closes
 #     that hole, and both must hold before the smoke proceeds.
 PROM_JOBS=5
-prom_query() { curl -fsS -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || true; }
+# -m keeps a hung collector from stalling the poll past its budget;
+# stderr is silenced so a healthy wait doesn't look alarming in CI logs.
+prom_query() { curl -fsS -m 10 -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null | json_field "['data']['result'][0]['value'][1]" 2>/dev/null || true; }
 minup=""; jobs_seen=""
 for _ in $(seq 1 18); do
   minup=$(prom_query 'min(up{job=~"pulsar-.*"})')
@@ -152,7 +165,7 @@ log "checking Jaeger trace"
 traces="[]"
 for _ in $(seq 1 6); do
   sleep 5
-  traces=$(curl -fsS "$JAEGER_URL/api/traces?service=pulsar-gateway&limit=1&lookback=1h" | json_field "['data']" 2>/dev/null || echo "[]")
+  traces=$(curl -fsS -m 10 "$JAEGER_URL/api/traces?service=pulsar-gateway&limit=1&lookback=1h" 2>/dev/null | json_field "['data']" 2>/dev/null || echo "[]")
   [[ "$traces" != "[]" ]] && break
 done
 [[ "$traces" != "[]" ]] || fail "no pulsar-gateway trace found in Jaeger"
