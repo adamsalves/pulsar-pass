@@ -38,7 +38,10 @@ func StartContainerE[T testcontainers.Container](what string, run func(context.C
 	return c, err
 }
 
-// StartContainer is StartContainerE with t.Fatalf on failure.
+// StartContainer is StartContainerE with t.Fatalf on failure. Do not
+// use inside a sync.Once: a Fatalf there exits the first caller's test
+// while marking the once as done, hiding the failure from every later
+// test — use StartContainerE and record the error instead.
 func StartContainer[T testcontainers.Container](t *testing.T, what string, run func(context.Context) (T, error)) T {
 	t.Helper()
 	c, err := StartContainerE(what, run)
