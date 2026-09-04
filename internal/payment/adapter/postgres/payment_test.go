@@ -10,6 +10,8 @@ import (
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/adamsalves/pulsar-pass/internal/testinfra"
+
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 )
 
@@ -25,12 +27,14 @@ func payTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	paySetup.Do(func() {
 		ctx := context.Background()
-		ctr, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-			tcpostgres.WithDatabase("pulsar_payment_test"),
-			tcpostgres.WithUsername("test"),
-			tcpostgres.WithPassword("test"),
-			tcpostgres.BasicWaitStrategies(),
-		)
+		ctr, err := testinfra.StartContainerE("postgres", func(ctx context.Context) (*tcpostgres.PostgresContainer, error) {
+			return tcpostgres.Run(ctx, "postgres:17-alpine",
+				tcpostgres.WithDatabase("pulsar_payment_test"),
+				tcpostgres.WithUsername("test"),
+				tcpostgres.WithPassword("test"),
+				tcpostgres.BasicWaitStrategies(),
+			)
+		})
 		if err != nil {
 			payErr = err
 			return

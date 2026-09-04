@@ -12,14 +12,14 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/adamsalves/pulsar-pass/internal/holds"
+	"github.com/adamsalves/pulsar-pass/internal/testinfra"
 )
 
 func startRedis(t *testing.T) string {
 	t.Helper()
-	ctr, err := tcredis.Run(context.Background(), "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis container: %v", err)
-	}
+	ctr := testinfra.StartContainer(t, "redis", func(ctx context.Context) (*tcredis.RedisContainer, error) {
+		return tcredis.Run(ctx, "redis:7-alpine")
+	})
 	t.Cleanup(func() {
 		_ = ctr.Terminate(context.Background())
 	})
