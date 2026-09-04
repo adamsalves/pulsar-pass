@@ -290,7 +290,10 @@ func startContainer[T testcontainers.Container](t *testing.T, what string, run f
 	ctx := context.Background()
 	c, err := run(ctx)
 	if err != nil && strings.Contains(err.Error(), "reaper") {
-		t.Logf("%s boot flaked on the testcontainers reaper; retrying once: %v", what, err)
+		// stderr, not t.Logf: CI runs without -v, and the successful
+		// retry is exactly the signal worth auditing (flake recurrence
+		// of #54) — a passing test would swallow the log line.
+		fmt.Fprintf(os.Stderr, "[e2e] %s boot flaked on the testcontainers reaper; retrying once: %v\n", what, err)
 		c, err = run(ctx)
 	}
 	if err != nil {
