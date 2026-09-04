@@ -22,7 +22,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 	natsserver "github.com/nats-io/nats-server/v2/server"
-	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
@@ -38,6 +37,7 @@ import (
 	horizonadapter "github.com/adamsalves/pulsar-pass/internal/horizon/adapter/postgres"
 	"github.com/adamsalves/pulsar-pass/internal/payment"
 	payadapter "github.com/adamsalves/pulsar-pass/internal/payment/adapter/postgres"
+	"github.com/adamsalves/pulsar-pass/internal/testinfra"
 	"github.com/adamsalves/pulsar-pass/pkg/eventbus"
 	"github.com/adamsalves/pulsar-pass/pkg/logger"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
@@ -184,7 +184,7 @@ func (h *harness) otherToken(t *testing.T, not string) string {
 func startDatabases(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	ctr := startContainer(t, "postgres", func(ctx context.Context) (*tcpostgres.PostgresContainer, error) {
+	ctr := testinfra.StartContainer(t, "postgres", func(ctx context.Context) (*tcpostgres.PostgresContainer, error) {
 		return tcpostgres.Run(ctx, "postgres:17-alpine",
 			tcpostgres.WithDatabase("pulsar_core_e2e"),
 			tcpostgres.WithUsername("test"),
@@ -266,7 +266,7 @@ func pgxConnect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 
 func startRedis(t *testing.T) string {
 	t.Helper()
-	ctr := startContainer(t, "redis", func(ctx context.Context) (*tcredis.RedisContainer, error) {
+	ctr := testinfra.StartContainer(t, "redis", func(ctx context.Context) (*tcredis.RedisContainer, error) {
 		return tcredis.Run(ctx, "redis:7-alpine")
 	})
 	t.Cleanup(func() { _ = ctr.Terminate(context.Background()) })
@@ -275,31 +275,6 @@ func startRedis(t *testing.T) string {
 		t.Fatalf("redis connection string: %v", err)
 	}
 	return url
-}
-
-// startContainer runs a testcontainer start, retrying once when the
-// reaper (ryuk) is not ready in time: the first boot of a session
-// waits for the reaper container against a 60s internal deadline, and
-// on a cold or busy runner that wait can blow up while the saga under
-// test is perfectly healthy — seen on the v0.5.0 release gate (#54),
-// same runner-contention class as #47. The abandoned first container
-// is not the test's concern: CI runners are ephemeral and a healthy
-// reaper on the retry claims the session.
-func startContainer[T testcontainers.Container](t *testing.T, what string, run func(context.Context) (T, error)) T {
-	t.Helper()
-	ctx := context.Background()
-	c, err := run(ctx)
-	if err != nil && strings.Contains(err.Error(), "reaper") {
-		// stderr, not t.Logf: CI runs without -v, and the successful
-		// retry is exactly the signal worth auditing (flake recurrence
-		// of #54) — a passing test would swallow the log line.
-		fmt.Fprintf(os.Stderr, "[e2e] %s boot flaked on the testcontainers reaper; retrying once: %v\n", what, err)
-		c, err = run(ctx)
-	}
-	if err != nil {
-		t.Fatalf("start %s: %v", what, err)
-	}
-	return c
 }
 
 func startNATS(t *testing.T) string {

@@ -12,6 +12,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/adamsalves/pulsar-pass/internal/core/domain"
+	"github.com/adamsalves/pulsar-pass/internal/testinfra"
 	"github.com/adamsalves/pulsar-pass/pkg/pgpool"
 )
 
@@ -28,12 +29,14 @@ func coreTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	coreSetup.Do(func() {
 		ctx := context.Background()
-		ctr, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-			tcpostgres.WithDatabase("pulsar_core_test"),
-			tcpostgres.WithUsername("test"),
-			tcpostgres.WithPassword("test"),
-			tcpostgres.BasicWaitStrategies(),
-		)
+		ctr, err := testinfra.StartContainerE("postgres", func(ctx context.Context) (*tcpostgres.PostgresContainer, error) {
+			return tcpostgres.Run(ctx, "postgres:17-alpine",
+				tcpostgres.WithDatabase("pulsar_core_test"),
+				tcpostgres.WithUsername("test"),
+				tcpostgres.WithPassword("test"),
+				tcpostgres.BasicWaitStrategies(),
+			)
+		})
 		if err != nil {
 			coreErr = err
 			return
