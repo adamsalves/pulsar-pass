@@ -31,3 +31,12 @@ sidecar:
     enabled: true
     searchNamespace: ALL
     label: grafana_datasource
+  # Alerting provisioning from ConfigMaps (follow-up #51): the wait
+  # rule payment-context-waits-exhausted ships in the cluster too,
+  # generated from the compose provisioning dir — same single source
+  # as the dashboards.
+  alerts:
+    enabled: true
+    searchNamespace: ALL
+    label: grafana_alert
+    labelValue: "1"
