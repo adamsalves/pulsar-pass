@@ -193,7 +193,7 @@ Tudo tem padrão coerente para o quickstart; a tabela lista as variáveis por se
 Com `make compose-up` + os serviços no ar (`make run-*`):
 
 - **Grafana** (`http://localhost:3000`, login anônimo) — dashboard **"PulsarPass — Saga overview"** provisionado com os sinais do blueprint: requests/s e p99 do gateway, reservas e esgotamento (`sold_out`) por segundo, charges por outcome, **esperas inline do payment por outcome** (`resolved`/`exhausted`/`aborted`), backlog das outboxes, idade da reserva `PENDING` mais antiga, operações e circuit breaker do acelerador Redis, advisories de DLQ.
-  - **Alerta provisionado** (`payment-context-waits-exhausted`): dispara quando o wait inline pela projeção `reservation_context` esgota o budget de forma sustentada — o sinal de `reservation_id` fantasma (ou lag anômalo da projeção). Regra em `deployments/docker/grafana/provisioning/alerting/`.
+  - **Alerta provisionado** (`payment-context-waits-exhausted`): dispara quando o wait inline pela projeção `reservation_context` esgota o budget de forma sustentada — o sinal de `reservation_id` fantasma (ou lag anômalo da projeção). Regra em `deployments/docker/grafana/provisioning/alerting/`, fonte única para o compose **e** para o cluster kind (ConfigMap gerado pelo `deploy-infra`, sidecar de alerting do chart).
 - **Prometheus** (`http://localhost:9090`) — coleta os 5 serviços via `/metrics` (host.docker.internal).
 - **Jaeger** (`http://localhost:16686`) — tracing distribuído OTLP. Exporte `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` antes de subir os serviços; a saga aparece como um trace único (gateway → core → payment → core). Sob carga, limite o volume com `OTEL_TRACE_SAMPLE_RATIO=0.1`.
 

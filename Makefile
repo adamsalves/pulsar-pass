@@ -141,6 +141,13 @@ deploy-infra:
 		--dry-run=client -o yaml \
 		| kubectl label --local -f - grafana_dashboard=1 -o yaml --dry-run=client \
 		| kubectl apply -f -
+	# Alerting rules follow the same single source: the compose
+	# provisioning dir (follow-up #51), picked up by the alerts sidecar.
+	kubectl create configmap grafana-alerting -n monitoring \
+		--from-file=deployments/docker/grafana/provisioning/alerting/ \
+		--dry-run=client -o yaml \
+		| kubectl label --local -f - grafana_alert=1 -o yaml --dry-run=client \
+		| kubectl apply -f -
 	@echo "infra up: postgres/redis/nats in pulsarpass, prometheus/grafana/jaeger in monitoring"
 
 # Services from the release pipeline images (GHCR). For a local smoke,
