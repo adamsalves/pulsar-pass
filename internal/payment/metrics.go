@@ -24,16 +24,6 @@ type chargeMetrics struct {
 
 var chMetrics chargeMetrics
 
-// Re-arm the lazy bindings when the metrics providers shut down, so a
-// second Init in the same process rebinds instead of writing into the
-// dead registry.
-func init() {
-	metrics.OnShutdown(func() {
-		chMetrics = chargeMetrics{}
-		waitMetrics = contextWaitMetrics{}
-	})
-}
-
 func (m *chargeMetrics) counter() (api.Int64Counter, error) {
 	m.once.Do(func() {
 		meter := otel.Meter("pulsar-pass/payment")
@@ -77,6 +67,17 @@ type contextWaitMetrics struct {
 }
 
 var waitMetrics contextWaitMetrics
+
+// Re-arm both lazy bindings when the metrics providers shut down, so a
+// second Init in the same process rebinds instead of writing into the
+// dead registry. Placed after both declarations so the reset scope is
+// obvious to whoever maintains either instrument.
+func init() {
+	metrics.OnShutdown(func() {
+		chMetrics = chargeMetrics{}
+		waitMetrics = contextWaitMetrics{}
+	})
+}
 
 func (m *contextWaitMetrics) counter() (api.Int64Counter, error) {
 	m.once.Do(func() {
